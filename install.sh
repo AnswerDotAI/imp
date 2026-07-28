@@ -14,12 +14,12 @@ ditto -x -k "$tmp/Imp.app.zip" "$HOME/Applications"
 imp="$HOME/Applications/Imp.app/Contents/MacOS/Imp"
 
 if [ -d "$HOME/.local/bin" ]; then
-    ln -sf "$imp" "$HOME/.local/bin/imp"
-    echo "Installed $HOME/Applications/Imp.app, linked as ~/.local/bin/imp"
+    ln -sf "$imp" "$HOME/.local/bin/Imp"
+    echo "Installed $HOME/Applications/Imp.app, linked as ~/.local/bin/Imp"
 else
     echo "Installed $HOME/Applications/Imp.app"
-    echo "For an 'imp' command, link it somewhere on your PATH:"
-    echo "  ln -s $imp /usr/local/bin/imp"
+    echo "For an 'Imp' command, link it somewhere on your PATH:"
+    echo "  ln -s $imp /usr/local/bin/Imp"
 fi
 
 echo

@@ -138,8 +138,10 @@ func usage() -> Never {
 let args = CommandLine.arguments
 
 // Everything Imp does must happen as Imp, so re-spawn ourselves disclaimed if we were
-// launched by something that already owns a TCC identity.
-if !amImp() { exit(wait(spawn(args, disclaim: true))) }
+// launched by something that already owns a TCC identity. Re-spawn by our real path, since
+// a shell gives argv[0] as the bare name when it finds us on PATH, and posix_spawn has no
+// PATH lookup of its own.
+if !amImp() { exit(wait(spawn([exePath(getpid())] + args.dropFirst(), disclaim: true))) }
 
 if args.count < 2 { usage() }
 switch args[1] {

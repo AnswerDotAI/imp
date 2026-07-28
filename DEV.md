@@ -16,6 +16,8 @@ The same finding is why `--grant` and `--status` must run as Imp: a wizard that 
 
 Verification needs a fresh process, because a grant made after launch is invisible to the process that requested it (Screen Recording never updates in place, and Accessibility is not reliable either). Imp spawns a short-lived copy of itself per check, which is the same thing it already does for everything else.
 
+The re-spawn must use Imp's real path from `proc_pidpath`, not `argv[0]`. A shell that finds a binary on `PATH` passes the bare name as `argv[0]` (verified with a native probe: through `PATH` it reads `Probe2`, by full path `/tmp/argv0probe/Probe2`), and `posix_spawn` does no `PATH` lookup, so passing `CommandLine.arguments` through made `Imp --status` fail with `cannot run Imp: No such file or directory` the moment the installer's `~/.local/bin/Imp` link existed. Nothing caught it earlier because every call until then named the binary in full.
+
 ## Grants survive rebuilds, and that is the point (verified 2026-07-28)
 
 A Swift Imp built from scratch, signed fresh, and placed at a different path inherited an existing Accessibility grant with no prompt, because the designated requirement names the bundle identifier and team and nothing else. The same held for a `ditto` archive extracted somewhere else entirely, with `codesign --verify --strict` passing on the extracted copy. That is what makes curl-installed updates silent: new version, same grants, no second row in Settings.

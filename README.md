@@ -1,5 +1,7 @@
 # Imp
 
+> A small macOS app you should never use that holds permission grants on behalf of anything you run through it.
+
 macOS asks your permission before a program can watch the keyboard, control other apps, or record the screen. Every program has to ask separately. macOS remembers each grant against one specific program, and silently drops it when that program is rebuilt or its virtual environment moves. For a developer running scripts and automation tools, this means the same dialogs over and over, a Settings list full of entries called `python3.13`, and things that stop working for no visible reason.
 
 Imp is a small signed app that holds those permissions on behalf of anything you run through it.

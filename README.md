@@ -38,7 +38,7 @@ Imp finds the command the way a shell does, so `Imp pytest` works as well as `Im
 
 Permission names are `accessibility` (watching input, controlling other apps, sending synthetic keystrokes), `screen` (screen recording, and reading window titles), and `notifications`.
 
-`--grant` asks for one permission at a time and confirms each before moving to the next. Where macOS provides a prompt, you get the prompt. Where it doesn't, or where you dismissed the prompt earlier and macOS therefore refuses to show it again, Imp opens the exact Settings pane and waits for you to do it by hand. Either way it keeps checking until the permission really works, so when the command finishes you know the answer.
+`--grant` asks for one permission at a time and confirms each before moving to the next. It asks macOS to show its own dialog, then waits up to two minutes for the permission to really work. macOS shows each dialog only once per category, so if you dismissed it in the past no dialog can appear: after the wait, Imp prints the exact `open` command for the right Settings pane and what to switch on, and exits nonzero.
 
 `--check` is for scripts. It prints nothing and only sets an exit code.
 

@@ -20,10 +20,17 @@ func notifyAuthorized() -> Bool {
     return ok.v
 }
 
-func notifyRequest() {
-    let sem = DispatchSemaphore(value: 0)
-    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in sem.signal() }
+/// On macOS the authorization request is a banner, not a modal: clicking it opens Settings
+/// and fires the completion with false before the person has decided anything. So only a
+/// true return is definitive; false means "not yet", and the caller must poll.
+func notifyRequest() -> Bool {
+    let sem = DispatchSemaphore(value: 0), ok = Box(false)
+    UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { g, _ in
+        ok.v = g
+        sem.signal()
+    }
     sem.wait()
+    return ok.v
 }
 
 func notify(_ title: String, _ body: String) -> Int32 {

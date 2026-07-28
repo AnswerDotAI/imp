@@ -37,6 +37,7 @@ nonisolated(unsafe) var childPid: pid_t = 0
 func wait(_ pid: pid_t) -> Int32 {
     childPid = pid
     for sig in [SIGTERM, SIGINT, SIGHUP] { signal(sig, { s in kill(childPid, s) }) }
+    defer { for sig in [SIGTERM, SIGINT, SIGHUP] { signal(sig, SIG_DFL) } }  // else the handler outlives the child and forwards ctrl-c to a dead pid
     var status: Int32 = 0
     while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
     return exitStatus(of: status)
@@ -44,21 +45,19 @@ func wait(_ pid: pid_t) -> Int32 {
 
 struct Perm {
     let name: String
-    let pane: String       // Settings URL, for the categories macOS will not prompt for twice
-    let manual: String?    // What the user must do by hand, when there is no prompt
+    let pane: String       // Settings URL, printed when the one-shot dialog does not come
     let check: () -> Bool
-    let request: () -> Void
+    let request: () -> Bool?  // true confirms the grant (skip polling); false or nil decide nothing, so poll `check`
 }
 
 nonisolated(unsafe) let perms = [
-    Perm(name: "accessibility", pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", manual: nil,
+    Perm(name: "accessibility", pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
          check: { AXIsProcessTrusted() },
-         request: { _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary) }),
-    Perm(name: "screen", pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", manual: nil,
+         request: { _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary); return nil }),
+    Perm(name: "screen", pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
          check: { CGPreflightScreenCaptureAccess() },
-         request: { _ = CGRequestScreenCaptureAccess() }),
-    // manual is nil because macOS does prompt for this one; the Settings pane is only the fallback
-    Perm(name: "notifications", pane: "x-apple.systempreferences:com.apple.Notifications-Settings.extension", manual: nil,
+         request: { _ = CGRequestScreenCaptureAccess(); return nil }),
+    Perm(name: "notifications", pane: "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
          check: { notifyAuthorized() },
          request: { notifyRequest() }),
 ]
@@ -69,10 +68,6 @@ func perm(_ name: String) -> Perm? { perms.first { $0.name == name } }
 /// process that requested it (Screen Recording never updates in place; Accessibility may not).
 func granted(_ p: Perm) -> Bool { wait(spawn([exePath(getpid()), "--check", p.name])) == 0 }
 
-func openPane(_ p: Perm) {
-    _ = wait(spawn(["/usr/bin/open", p.pane]))
-}
-
 func waitFor(_ p: Perm, seconds: Double) -> Bool {
     let deadline = Date().addingTimeInterval(seconds)
     while Date() < deadline {
@@ -82,8 +77,8 @@ func waitFor(_ p: Perm, seconds: Double) -> Bool {
     return false
 }
 
-/// macOS shows each dialog once per app per category, so a denied grant can never be
-/// re-prompted: fall through to the Settings pane and wait for the user instead.
+/// macOS shows each permission dialog once per app per category, so a denied grant can
+/// never be re-prompted: when no dialog comes, all we can honestly do is say what to do next.
 func grant(_ names: [String]) -> Int32 {
     var failed = [String]()
     for name in names {
@@ -92,17 +87,18 @@ func grant(_ names: [String]) -> Int32 {
             return 2
         }
         if granted(p) { print("\(p.name): already granted"); continue }
-        if p.manual == nil {
-            print("\(p.name): asking. Say yes to the prompt; if none appears this waits 20s, then opens Settings.")
-            p.request()
-            if waitFor(p, seconds: 20) { print("\(p.name): granted"); continue }
-        }
-        print("\(p.name): needs granting by hand. Opening Settings.")
-        if let m = p.manual { print("  \(m)") }
-        else { print("  Find Imp in the list that opens and switch it on.") }
-        openPane(p)
-        if waitFor(p, seconds: 180) { print("\(p.name): granted") }
-        else { print("\(p.name): STILL MISSING"); failed.append(p.name) }
+        print("""
+        \(p.name): Please approve the dialog naming Imp.
+        I'll wait up to 2 mins for you to complete that.
+        Hit ctrl-c to stop me waiting.
+        macOS shows the dialog only once. To grant it by hand:
+        # open "\(p.pane)"
+        then switch Imp on in that pane, and re-run this command to confirm.
+        """)
+        let answer = p.request()
+        if answer == true || waitFor(p, seconds: 120) { print("\(p.name): granted"); continue }
+        print("\(p.name): STILL MISSING")
+        failed.append(p.name)
     }
     return failed.isEmpty ? 0 : 1
 }

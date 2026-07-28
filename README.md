@@ -1,0 +1,62 @@
+# Imp
+
+macOS asks your permission before a program can watch the keyboard, control other apps, or record the screen. Every program has to ask separately, the grant is remembered against that specific program, and a rebuilt binary or a moved virtual environment silently loses it. For a developer running scripts and automation tools, this means the same dialogs over and over, a Settings list full of entries called `python3.13`, and things that stop working for no visible reason.
+
+Imp is a small signed app that holds those permissions on behalf of anything you run through it.
+
+    imp python watch_keys.py
+
+The script now has whatever permissions Imp has. Nothing needed to be signed, bundled, or granted separately, and nothing breaks when you rebuild it or move it.
+
+## Install
+
+    curl -fsSL https://raw.githubusercontent.com/AnswerDotAI/imp/main/install.sh | sh
+
+That puts `Imp.app` in `~/Applications` and links `imp` into `~/.local/bin`. Apple Silicon only.
+
+Then grant it what you need, once:
+
+    imp --grant accessibility
+
+## Use
+
+    imp <command> [args...]     run a command with Imp's permissions
+    imp --grant <a,b>           get the named permissions, one at a time
+    imp --check <a,b>           exit 0 if all are granted, else 1
+    imp --status                report every permission's state
+
+Permission names are `accessibility` (watching input, controlling other apps, sending synthetic keystrokes) and `screen` (screen recording, and reading window titles).
+
+`--grant` asks for one permission at a time and confirms each before moving to the next. Where macOS provides a prompt, you get the prompt. Where it doesn't, or where you dismissed the prompt earlier and macOS therefore refuses to show it again, Imp opens the exact Settings pane and waits for you to do it by hand. Either way it keeps checking until the permission really works, so when the command finishes you know the answer.
+
+`--check` is for scripts: no output, just an exit code.
+
+For a background agent, put Imp at the front of a launchd plist's `ProgramArguments`:
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/you/Applications/Imp.app/Contents/MacOS/Imp</string>
+      <string>/path/to/venv/bin/python</string>
+      <string>-m</string>
+      <string>youragent</string>
+    </array>
+
+## How it works
+
+macOS decides which program a permission check applies to by walking up the process tree to a *responsible process*, not by looking at the binary that made the call. That is why a python script started from a terminal is treated as the terminal, and why every script you run inherits your terminal's permissions today.
+
+Imp makes itself the responsible process and then runs your command as a child, so your command is treated as Imp. When Imp is started from a terminal it would ordinarily inherit the terminal's identity instead, so it re-launches itself once with responsibility disclaimed, which macOS supports for exactly this purpose.
+
+Permissions are recorded against a code signature requirement rather than a hash of the binary. Imp's requirement is its bundle identifier plus the Answer.AI team ID, so a new version installed over the old one keeps every permission, with no second entry in Settings and no prompt.
+
+## Security
+
+Anything you run through Imp gets everything Imp has been granted. That is the whole point, and it means Imp is exactly as trustworthy as the things you choose to run through it. Grant it only what you need, and don't hand `imp` to code you wouldn't hand your keyboard to.
+
+## Build from source
+
+Needs Xcode and, for signing, a Developer ID certificate.
+
+    swift build -c release
+
+The helpers in `swifttool.py` (currently in the `macmage` repo) build the package, assemble and sign the bundle, and produce the `ditto` archive in `dist/`. An unsigned or ad-hoc-signed build works, but its permissions are keyed to the exact binary, so they are lost on every rebuild.

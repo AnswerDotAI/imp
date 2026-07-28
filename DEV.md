@@ -58,6 +58,7 @@ The cost of `[system]` is that clang stops reporting warnings from those headers
 - macOS shows each dialog once per app per category. After a denial the request API returns immediately with no UI, so a wizard that only calls request and waits will hang forever on exactly the users who fat-fingered "Don't Allow". Hence request, wait two minutes, then print what to do by hand. An earlier version auto-opened the Settings pane; removed 2026-07-28 as cleverness serving a rare case.
 - `tccutil reset Accessibility com.answerdotai.imp` revokes one category for one bundle, which is how to test the grant flow repeatedly without deleting Settings rows by hand.
 - Notifications are not TCC, so `tccutil` cannot reset them. The reset for testing is in the Notifications Settings pane: right-click the Imp row, then "Reset Notifications", which returns the state to not-determined so the dialog fires again (found 2026-07-28; the Delete-key method blogs describe did not apply).
+
 ## Why `--grant` asks one at a time
 
 Simultaneous TCC requests collide: asking for accessibility and input monitoring together produced only the accessibility dialog (verified live 2026-07-27, in the Python predecessor). `--grant` therefore walks its list one permission at a time and confirms each before starting the next, and prints the Settings deep link as an `open` command whenever the prompt does not arrive.
@@ -103,3 +104,15 @@ The bundle now sets `LSUIElement` rather than `LSBackgroundOnly`, since a backgr
 `notifications` is the third permission, and adding it showed the `Perm` table extends cleanly, except that `pane` had to become a whole Settings URL: the notification pane is `x-apple.systempreferences:com.apple.Notifications-Settings.extension`, not an anchor under Privacy and Security.
 
 The authorization "prompt" on macOS is a banner in the top right, not a modal: clicking it opens the Settings pane, and `requestAuthorization`'s completion fires with `granted=false` at that moment, before the person has decided anything (observed live 2026-07-28). So a false completion is not a denial and must fall back to polling; only true is definitive, and `--grant` treats it as such (`answer == true || waitFor(...)`). This also makes the tempting `getNotificationSettings`-for-denied shortcut suspect: whether a banner click-through records `.denied` is unknown, and if it does, the shortcut would report failure to a person who is mid-way to granting.
+
+
+## Windowed widgets (2026-07-28)
+
+`runPanel` in `show.swift` is the shared modal shell for every windowed widget: an accessory-activated `NSPanel` run with `runModal`, where Esc (a local `keyDown` monitor) and the close button (`windowWillClose` delegate calling `stopModal`) both end the session. `--web`, `--pick`, and `--show` are the widgets on it.
+
+Verified live 2026-07-28, all on the first build:
+
+- `WKWebView` renders fine inside `runModal` (remote URL, local file, and stdin HTML). The feared stall, WebKit callbacks starving in the modal run-loop mode, did not occur; this matches the OAuth-dialog pattern Mac apps use.
+- A faceless app has no menu bar, so cmd-C/cmd-A have no key equivalents to route through. `installEditMenu` (a programmatic Edit menu with nil-target actions) restores them, and works during a modal session.
+- Focus returns to the previous app when the panel closes and the process exits.
+- `NSPanel.hidesOnDeactivate` defaults to true, which hides the panel the moment another app activates, leaving a blocked process with no visible window; `runPanel` sets it false, and `.floating` level keeps panels above other windows until dealt with. macOS has no cross-app modality to offer instead: `runModal` is application-modal only.

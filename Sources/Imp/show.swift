@@ -1,5 +1,6 @@
 import AppKit
 import UserNotifications
+import WebKit
 
 /// Everything here needs an application identity, which is why it lives in Imp rather than in
 /// whatever Imp is running: an unbundled process can neither post a notification nor own a window.
@@ -59,4 +60,106 @@ func notify(_ title: String, _ body: String) -> Int32 {
     for b in buttons { a.addButton(withTitle: b) }
     app.activate(ignoringOtherApps: true)
     return Int32(a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue)
+}
+
+
+/// Modal panel shell shared by every windowed widget: Esc or the close button ends the
+/// modal session. Returns .cancel for those, .OK otherwise.
+final class CloseStopper: NSObject, NSWindowDelegate {
+    func windowWillClose(_ n: Notification) { NSApplication.shared.stopModal(withCode: .cancel) }
+}
+
+/// A faceless app has no menu bar, so cmd-C/cmd-A key equivalents have nothing to route
+/// through; this minimal Edit menu restores them (nil targets walk the responder chain).
+@MainActor func installEditMenu() {
+    let main = NSMenu(), edit = NSMenuItem(), m = NSMenu(title: "Edit")
+    m.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    m.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    edit.submenu = m
+    main.addItem(edit)
+    NSApplication.shared.mainMenu = main
+}
+
+@MainActor func runPanel(_ title: String, _ content: NSView, w: CGFloat = 800, h: CGFloat = 600) -> NSApplication.ModalResponse {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    installEditMenu()
+    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
+                        styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    panel.title = title
+    panel.hidesOnDeactivate = false  // the NSPanel default hides it when another app activates, leaving a blocked process with no visible window
+    panel.level = .floating          // stay above other windows until dealt with; macOS has no cross-app modality
+    content.frame = panel.contentView!.bounds
+    content.autoresizingMask = [.width, .height]
+    panel.contentView!.addSubview(content)
+    panel.center()
+    let stopper = CloseStopper()
+    panel.delegate = stopper
+    let mon = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+        if e.keyCode == 53 { NSApplication.shared.stopModal(withCode: .cancel); return nil }  // Esc
+        return e
+    }
+    app.activate(ignoringOtherApps: true)
+    let res = app.runModal(for: panel)
+    if let mon { NSEvent.removeMonitor(mon) }
+    panel.delegate = nil
+    panel.close()
+    return res
+}
+
+/// A web page (or stdin HTML, when `target` is "-") in a modal panel.
+@MainActor func web(_ title: String, _ target: String) -> Int32 {
+    let v = WKWebView(frame: .zero)
+    if target == "-" {
+        let html = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        v.loadHTMLString(html, baseURL: nil)
+    } else if let u = URL(string: target), u.scheme != nil {
+        v.load(URLRequest(url: u))
+    } else {
+        let f = URL(fileURLWithPath: target)
+        v.loadFileURL(f, allowingReadAccessTo: f.deletingLastPathComponent())
+    }
+    _ = runPanel(title, v)
+    return 0
+}
+
+
+/// A numbered menu in a modal panel: press an item's digit to choose it. The chosen index
+/// goes to stdout (not the exit code, which dies at 255); Esc or close prints nothing.
+@MainActor func pick(_ title: String, _ items: [String]) -> Int32 {
+    let stack = NSStackView()
+    stack.orientation = .vertical
+    stack.alignment = .leading
+    stack.spacing = 6
+    stack.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
+    for (i, item) in items.enumerated() {
+        let l = NSTextField(labelWithString: "\(i)  \(item)")
+        l.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        l.lineBreakMode = .byTruncatingTail
+        stack.addArrangedSubview(l)
+    }
+    let mon = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+        if let d = Int(e.characters ?? ""), d < items.count {
+            NSApplication.shared.stopModal(withCode: .init(1000 + d))
+            return nil
+        }
+        return e
+    }
+    let res = runPanel(title, stack, w: 460, h: CGFloat(items.count * 26 + 28))
+    if let mon { NSEvent.removeMonitor(mon) }
+    guard res.rawValue >= 1000 else { return 1 }
+    print(res.rawValue - 1000)
+    return 0
+}
+
+/// Stdin, monospaced and selectable, in a scrollable modal panel.
+@MainActor func show(_ title: String) -> Int32 {
+    let sv = NSTextView.scrollableTextView()
+    let tv = sv.documentView as! NSTextView
+    tv.string = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    tv.isEditable = false
+    tv.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+    tv.textContainerInset = NSSize(width: 8, height: 8)
+    _ = runPanel(title, sv, w: 640, h: 420)
+    return 0
 }

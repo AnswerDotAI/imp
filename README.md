@@ -33,6 +33,9 @@ Upgrading is the same command again, and keeps every grant. To remove Imp, delet
     Imp --version               print the version
     Imp --notify <title> [body]  post a notification
     Imp --alert <title> [body] [button...]   show a message box, and exit with the button's index
+    Imp --web <title> <url|file|->           show a web page in a panel; "-" reads HTML from stdin, Esc closes
+    Imp --pick <title> <item...>             choose by digit (up to ten items); the index goes to stdout
+    Imp --show <title>                       show stdin in a scrollable monospaced panel
 
 Imp finds the command the way a shell does, so `Imp pytest` works as well as `Imp /path/to/pytest`, and an executable script with a shebang runs as `Imp ./watch_keys.py`. Whatever it runs keeps Imp's permissions, including anything that program starts in turn.
 
@@ -42,7 +45,7 @@ Permission names are `accessibility` (watching input, controlling other apps, se
 
 `--check` is for scripts. It prints nothing and only sets an exit code.
 
-`--notify` and `--alert` exist because macOS will not let an unbundled process speak to the user at all: Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can borrow that. A notification takes about 20ms and needs the `notifications` permission; an alert blocks until its box is dismissed, and exits with the index of the button pressed, so `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script.
+`--notify`, `--alert`, `--web`, `--pick`, and `--show` exist because macOS will not let an unbundled process speak to the user at all: Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can borrow that. A notification takes about 20ms and needs the `notifications` permission; an alert blocks until its box is dismissed, and exits with the index of the button pressed, so `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script. A pick prints the chosen index to stdout and exits 1 when dismissed, so `i=$(Imp --pick ...)` reads naturally in shell. Esc or the close button dismisses any of the panels.
 
 `--status` reports the state of every permission, and which program macOS thinks it is talking to:
 
@@ -50,6 +53,7 @@ Permission names are `accessibility` (watching input, controlling other apps, se
     running as: Imp
     accessibility : true
     screen        : false
+    notifications : true
 
 `running as` should always say Imp. Anything else means Imp failed to make itself the responsible process, and the permissions reported belong to whatever launched Imp instead.
 

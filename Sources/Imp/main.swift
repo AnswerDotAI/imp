@@ -117,6 +117,9 @@ func usage() -> Never {
            Imp --version                print the version
            Imp --notify <title> [body]  post a notification
            Imp --alert <title> [body] [button...]  show a message box; the exit code is the button index
+           Imp --web <title> <url|file|->      show a web page in a panel; "-" reads HTML from stdin
+           Imp --pick <title> <item...>        choose by digit (max 10 items); the index goes to stdout, Esc exits 1
+           Imp --show <title>                  show stdin in a scrollable monospaced panel
     """)
     exit(2)
 }
@@ -145,5 +148,14 @@ case "--alert":
     if args.count < 3 { usage() }
     let buttons = args.count > 4 ? Array(args[4...]) : ["OK"]
     exit(alert(args[2], args.count > 3 ? args[3] : "", buttons: buttons))
+case "--web":
+    if args.count < 4 { usage() }
+    exit(web(args[2], args[3]))
+case "--pick":
+    if args.count < 4 || args.count > 13 { usage() }  // a digit selects, so ten items at most
+    exit(pick(args[2], Array(args[3...])))
+case "--show":
+    if args.count < 3 { usage() }
+    exit(show(args[2]))
 default: exit(wait(spawn(Array(args.dropFirst()))))
 }

@@ -1,0 +1,23 @@
+---
+# API notes reshape how Swift sees this header, without touching the header itself: here they
+# give the pointers honest nullability and the functions readable Swift names.
+# They are read from the module's include directory, named for the module, and only when the
+# module map declares the module [system] (see module.modulemap).
+# To see what they did:
+#   xcrun swift-synthesize-interface -Isystem Sources/CImp/include -module-name CImp \
+#     -target arm64-apple-macos14 -sdk "$(xcrun --show-sdk-path)"
+Name: CImp
+Functions:
+# Without Nullability, every pointer arrives as an implicitly-unwrapped optional, which
+# silently permits passing nil to parameters that must never be nil.
+- Name: imp_spawn
+  SwiftName: "impSpawn(_:disclaim:pid:)"
+  Parameters:
+  - Position: 0
+    Nullability: N
+  - Position: 2
+    Nullability: N
+- Name: responsibility_get_pid_responsible_for_pid
+  SwiftName: "responsiblePid(for:)"
+- Name: imp_exit_status
+  SwiftName: "exitStatus(of:)"

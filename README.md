@@ -20,7 +20,7 @@ Then grant it what you need, once:
 
 A permission applies only to processes started after you grant it, so restart whatever you are running once the grant is in place.
 
-Upgrading is the same command again, and keeps every grant. To remove Imp, delete `~/Applications/Imp.app` and the `~/.local/bin/imp` link. Its entries stay in System Settings, Privacy & Security until you remove them there with the minus button.
+Upgrading is the same command again, and keeps every grant. To remove Imp, delete `~/Applications/Imp.app` and the `~/.local/bin/Imp` link. Its entries stay in System Settings, Privacy & Security until you remove them there with the minus button.
 
 ## Use
 
@@ -28,12 +28,19 @@ Upgrading is the same command again, and keeps every grant. To remove Imp, delet
     Imp --grant <a,b>           get the named permissions, one at a time
     Imp --check <a,b>           exit 0 if all are granted, else 1
     Imp --status                report every permission's state
+    Imp --version               print the version
+    Imp --notify <title> [body]  post a notification
+    Imp --alert <title> [body] [button...]   show a message box, and exit with the button's index
 
-Permission names are `accessibility` (watching input, controlling other apps, sending synthetic keystrokes) and `screen` (screen recording, and reading window titles).
+Imp finds the command the way a shell does, so `Imp pytest` works as well as `Imp /path/to/pytest`, and an executable script with a shebang runs as `Imp ./watch_keys.py`. Whatever it runs keeps Imp's permissions, including anything that program starts in turn.
+
+Permission names are `accessibility` (watching input, controlling other apps, sending synthetic keystrokes), `screen` (screen recording, and reading window titles), and `notifications`.
 
 `--grant` asks for one permission at a time and confirms each before moving to the next. Where macOS provides a prompt, you get the prompt. Where it doesn't, or where you dismissed the prompt earlier and macOS therefore refuses to show it again, Imp opens the exact Settings pane and waits for you to do it by hand. Either way it keeps checking until the permission really works, so when the command finishes you know the answer.
 
 `--check` is for scripts. It prints nothing and only sets an exit code.
+
+`--notify` and `--alert` exist because macOS will not let an unbundled process speak to the user at all: Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can borrow that. A notification takes about 20ms and needs the `notifications` permission; an alert blocks until its box is dismissed, and exits with the index of the button pressed, so `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script.
 
 `--status` reports the state of every permission, and which program macOS thinks it is talking to:
 
@@ -71,5 +78,10 @@ Anything you run through Imp gets everything Imp has been granted. That is the w
 Needs Xcode and, for signing, a Developer ID certificate.
 
     swift build -c release
+    swift test
 
 The helpers in `swifttool.py` (currently in the `macmage` repo) build the package, assemble and sign the bundle, and produce the `ditto` archive in `dist/`. An unsigned or ad-hoc-signed build works, but its permissions are keyed to the exact binary, so they are lost on every rebuild.
+
+The `Imp` target is Swift. Alongside it, `CImp` is a small C target holding the things Swift cannot see: two libSystem functions Apple exports without declaring in any header, and the `wait(2)` status macros. `Sources/CImp/include/CImp.apinotes` then annotates that header so Swift imports it with real optionality and readable names, which is worth reading before adding anything to the shim.
+
+The version lives in `Sources/Imp/main.swift` as `impVersion`, and the build stamps it into the bundle's `Info.plist`.

@@ -1,22 +1,11 @@
 import ApplicationServices
+import CImp
 import CoreGraphics
 import Darwin
 import Foundation
 
-// Neither responsibility API is declared in the SDK, so look them up at runtime and
-// degrade gracefully if a future macOS drops them.
-typealias SetDisclaimFn = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
-typealias ResponsibleForFn = @convention(c) (pid_t) -> pid_t
-
-nonisolated(unsafe) let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
-
-func lookup<T>(_ name: String, as type: T.Type) -> T? {
-    guard let sym = dlsym(rtldDefault, name) else { return nil }
-    return unsafeBitCast(sym, to: type)
-}
-
-let setDisclaim = lookup("responsibility_spawnattrs_setdisclaim", as: SetDisclaimFn.self)
-let responsibleFor = lookup("responsibility_get_pid_responsible_for_pid", as: ResponsibleForFn.self)
+// The version the build stamps into Info.plist as CFBundleShortVersionString (see DEV.md)
+let impVersion = "0.1.0"
 
 func exePath(_ pid: pid_t) -> String {
     var buf = [UInt8](repeating: 0, count: 4096)
@@ -27,21 +16,15 @@ func exePath(_ pid: pid_t) -> String {
 /// Does TCC attribute this process to Imp? A process spawned by a terminal inherits the
 /// terminal's identity, so any grant it reports is the wrong one.
 func amImp() -> Bool {
-    guard let f = responsibleFor else { return true }
-    let r = f(getpid())
+    let r = responsiblePid(for: getpid())
     return r == getpid() || exePath(r) == exePath(getpid())
 }
 
 func spawn(_ args: [String], disclaim: Bool = false) -> pid_t {
-    var attr: posix_spawnattr_t?
-    posix_spawnattr_init(&attr)
-    defer { posix_spawnattr_destroy(&attr) }
-    if disclaim, let f = setDisclaim { _ = f(&attr, 1) }
     let argv = args.map { strdup($0) } + [nil]
-    let envp = ProcessInfo.processInfo.environment.map { strdup("\($0)=\($1)") } + [nil]
-    defer { for p in argv + envp { free(p) } }
+    defer { for p in argv { free(p) } }
     var pid: pid_t = 0
-    let rc = posix_spawn(&pid, args[0], nil, &attr, argv, envp)
+    let rc = impSpawn(argv, disclaim: disclaim ? 1 : 0, pid: &pid)
     if rc != 0 {
         FileHandle.standardError.write("Imp: cannot run \(args[0]): \(String(cString: strerror(rc)))\n".data(using: .utf8)!)
         exit(127)
@@ -56,25 +39,28 @@ func wait(_ pid: pid_t) -> Int32 {
     for sig in [SIGTERM, SIGINT, SIGHUP] { signal(sig, { s in kill(childPid, s) }) }
     var status: Int32 = 0
     while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
-    if status & 0x7f == 0 { return (status >> 8) & 0xff }
-    return 128 + (status & 0x7f)
+    return exitStatus(of: status)
 }
 
 struct Perm {
     let name: String
-    let pane: String       // Settings anchor, for the categories macOS won't prompt for twice
+    let pane: String       // Settings URL, for the categories macOS will not prompt for twice
     let manual: String?    // What the user must do by hand, when there is no prompt
     let check: () -> Bool
     let request: () -> Void
 }
 
 nonisolated(unsafe) let perms = [
-    Perm(name: "accessibility", pane: "Privacy_Accessibility", manual: nil,
+    Perm(name: "accessibility", pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", manual: nil,
          check: { AXIsProcessTrusted() },
          request: { _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary) }),
-    Perm(name: "screen", pane: "Privacy_ScreenCapture", manual: nil,
+    Perm(name: "screen", pane: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", manual: nil,
          check: { CGPreflightScreenCaptureAccess() },
          request: { _ = CGRequestScreenCaptureAccess() }),
+    // manual is nil because macOS does prompt for this one; the Settings pane is only the fallback
+    Perm(name: "notifications", pane: "x-apple.systempreferences:com.apple.Notifications-Settings.extension", manual: nil,
+         check: { notifyAuthorized() },
+         request: { notifyRequest() }),
 ]
 
 func perm(_ name: String) -> Perm? { perms.first { $0.name == name } }
@@ -84,7 +70,7 @@ func perm(_ name: String) -> Perm? { perms.first { $0.name == name } }
 func granted(_ p: Perm) -> Bool { wait(spawn([exePath(getpid()), "--check", p.name])) == 0 }
 
 func openPane(_ p: Perm) {
-    _ = wait(spawn(["/usr/bin/open", "x-apple.systempreferences:com.apple.preference.security?\(p.pane)"]))
+    _ = wait(spawn(["/usr/bin/open", p.pane]))
 }
 
 func waitFor(_ p: Perm, seconds: Double) -> Bool {
@@ -107,6 +93,7 @@ func grant(_ names: [String]) -> Int32 {
         }
         if granted(p) { print("\(p.name): already granted"); continue }
         if p.manual == nil {
+            print("\(p.name): asking. Say yes to the prompt; if none appears this waits 20s, then opens Settings.")
             p.request()
             if waitFor(p, seconds: 20) { print("\(p.name): granted"); continue }
         }
@@ -131,11 +118,15 @@ func usage() -> Never {
            Imp --grant <a,b>            get the named permissions, one at a time
            Imp --check <a,b>            exit 0 if all are granted, else 1
            Imp --status                 report every permission's state
+           Imp --version                print the version
+           Imp --notify <title> [body]  post a notification
+           Imp --alert <title> [body] [button...]  show a message box; the exit code is the button index
     """)
     exit(2)
 }
 
 let args = CommandLine.arguments
+if args.count > 1, args[1] == "--version" { print(impVersion); exit(0) }
 
 // Everything Imp does must happen as Imp, so re-spawn ourselves disclaimed if we were
 // launched by something that already owns a TCC identity. Re-spawn by our real path, since
@@ -151,5 +142,12 @@ case "--grant", "--check":
     let names = args[2].split(separator: ",").map(String.init)
     if args[1] == "--grant" { exit(grant(names)) }
     exit(names.allSatisfy { perm($0)?.check() ?? false } ? 0 : 1)
+case "--notify":
+    if args.count < 3 { usage() }
+    exit(notify(args[2], args.count > 3 ? args[3] : ""))
+case "--alert":
+    if args.count < 3 { usage() }
+    let buttons = args.count > 4 ? Array(args[4...]) : ["OK"]
+    exit(alert(args[2], args.count > 3 ? args[3] : "", buttons: buttons))
 default: exit(wait(spawn(Array(args.dropFirst()))))
 }

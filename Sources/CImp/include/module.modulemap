@@ -1,0 +1,5 @@
+// [system]: clang applies CImp.apinotes only to system modules
+module CImp [system] {
+    header "shim.h"
+    export *
+}

@@ -10,7 +10,7 @@ macOS decides which program a permission applies to by a kernel-tracked *respons
 | through Imp's launcher | ghostty (Imp itself is attributed to ghostty too) |
 | through Imp, spawned with responsibility disclaimed | Imp |
 
-So being a signed app bundle earns nothing when something else spawned you, which is why a terminal-launched Imp was a pass-through until it learned to re-spawn itself with `responsibility_spawnattrs_setdisclaim`. Under launchd the first spawn is already responsible, so the extra process only appears on the terminal path. Neither responsibility function is declared anywhere in the SDK (a grep over `$(xcrun --show-sdk-path)/usr/include` finds nothing), so Imp resolves both with `dlsym` and degrades gracefully if a future macOS drops them.
+So being a signed app bundle earns nothing when something else spawned you, which is why a terminal-launched Imp was a pass-through until it learned to re-spawn itself with `responsibility_spawnattrs_setdisclaim`. Under launchd the first spawn is already responsible, so the extra process only appears on the terminal path. Neither responsibility function is declared anywhere in the SDK, but both are exported by libSystem, so `CImp` declares them itself (see below).
 
 The same finding is why `--grant` and `--status` must run as Imp: a wizard that requested permissions while attributed to a terminal would grant *the terminal* and report success.
 
@@ -18,11 +18,37 @@ Verification needs a fresh process, because a grant made after launch is invisib
 
 The re-spawn must use Imp's real path from `proc_pidpath`, not `argv[0]`. A shell that finds a binary on `PATH` passes the bare name as `argv[0]` (verified with a native probe: through `PATH` it reads `Probe2`, by full path `/tmp/argv0probe/Probe2`), and `posix_spawn` does no `PATH` lookup, so passing `CommandLine.arguments` through made `Imp --status` fail with `cannot run Imp: No such file or directory` the moment the installer's `~/.local/bin/Imp` link existed. Nothing caught it earlier because every call until then named the binary in full.
 
+Children go through `posix_spawnp` for the same reason, so `Imp pytest` resolves on `PATH` like a shell command; `posix_spawn` would have needed every command named in full. A shebang script needs nothing extra, since the kernel handles `#!` inside the exec.
+
 ## Grants survive rebuilds, and that is the point (verified 2026-07-28)
 
 A Swift Imp built from scratch, signed fresh, and placed at a different path inherited an existing Accessibility grant with no prompt, because the designated requirement names the bundle identifier and team and nothing else. The same held for a `ditto` archive extracted somewhere else entirely, with `codesign --verify --strict` passing on the extracted copy. That is what makes curl-installed updates silent: new version, same grants, no second row in Settings.
 
 Since `curl` does not set the quarantine attribute, Gatekeeper never assesses a curl-installed app, so notarization is unnecessary for this distribution. A browser download would need it.
+
+## The `CImp` target, and what it is for (2026-07-28)
+
+Two libSystem functions Imp needs, `responsibility_get_pid_responsible_for_pid` and `responsibility_spawnattrs_setdisclaim`, are exported but undeclared. Both appear in `$(xcrun --show-sdk-path)/usr/lib/libSystem.B.tbd`, and a grep over the SDK's headers finds neither, so they link but Swift cannot see them. Imp used to reach them with `dlsym` plus `unsafeBitCast` through hand-written `@convention(c)` typealiases, which nothing checks: a wrong signature there is undefined behaviour with no diagnostic. Declaring them in `Sources/CImp/include/shim.h` gets the compiler to check the calls instead.
+
+That fallback was also worse than doing nothing. When the lookup failed, `amImp()` returned `true`, so Imp would claim to be the responsible process while running children under the terminal's identity, and every line `--status` printed would be wrong. A missing symbol should stop the program, and now does, at load.
+
+`CImp` holds three things, and each is there because C reaches something Swift cannot:
+
+- the two `extern` declarations above.
+- `imp_exit_status`, wrapping `WIFEXITED`, `WEXITSTATUS` and `WTERMSIG`. Those are macros, which Swift cannot import at all, so `wait` used to decode the status bits by hand.
+- `imp_spawn`, which does the `posix_spawnattr` dance and passes `environ` straight to `posix_spawnp`. Swift was rebuilding the environment out of `ProcessInfo.processInfo.environment`, a dictionary round-trip that reorders entries and cannot represent duplicate keys. A child now sees this process's environment exactly, multi-line values included (checked by comparing a child's `os.environ` against the parent's: 139 variables, identical).
+
+### API notes need `[system]` on the module
+
+`CImp.apinotes` gives the shim honest nullability and Swift-shaped names. It applies only when the module map declares `module CImp [system]`. With a plain `module CImp`, the annotations are silently ignored: `swift build` reported `cannot find 'responsiblePid' in scope`, and adding `-Xcc -fapinotes-modules` to the target's `swiftSettings` changed nothing. Marking the module `[system]` fixed it with no compiler flags at all, which is also how `swift-synthesize-interface` behaves, where `-I` shows the raw C names and `-Isystem` shows the annotated ones.
+
+Renaming through API notes leaves a good diagnostic rather than a mystery: calling the old name gives `'imp_exit_status' has been renamed to 'exitStatus(of:)'`.
+
+The cost of `[system]` is that clang stops reporting warnings from those headers, which is worth remembering if the shim ever grows past a page.
+
+### Versioning
+
+`impVersion` in `main.swift` is the only copy; the build passes it to `build_app` as `CFBundleShortVersionString`. Nothing enforces that, so a build that skips the argument produces a bundle whose plist disagrees with `Imp --version`. Worth fixing when `fastship` grows a Swift flavour and owns the release step.
 
 ## Permission facts worth not re-learning
 
@@ -61,3 +87,18 @@ Routes that do not work, so nobody retries them:
 - A self-signed certificate would also survive rebuilds, but it needs trust settings configured before `codesign` will use it, and it cannot be notarized. A Developer ID certificate is less work and strictly more useful.
 
 
+
+
+## Notifications and alerts (2026-07-28)
+
+Notification Center refuses a process whose bundle it cannot find, and a window needs an application to own it, so neither is reachable from the Python that macmage runs. Imp has a bundle and an identity already, which is why `--notify` and `--alert` live here rather than there. A notification is about 20ms end to end, including the process spawn.
+
+`UNUserNotificationCenter` works from a plain command-line binary inside the bundle, with no `NSApplication`. Its calls are asynchronous, so each one is a `DispatchSemaphore` wait, with the result left in a small box class because a captured `var` is not `Sendable` under Swift 6.
+
+`NSAlert` does need `NSApplication`, but only `.shared` with the accessory activation policy, which does not conflict with anything: the alert is a fresh short-lived process. Its function is `@MainActor`, which top-level code satisfies.
+
+The bundle now sets `LSUIElement` rather than `LSBackgroundOnly`, since a background-only app cannot bring a window to the front. No Dock icon either way, and the change does not touch the designated requirement, so grants survive it.
+
+`notifications` is the third permission, and adding it showed the `Perm` table extends cleanly, except that `pane` had to become a whole Settings URL: the notification pane is `x-apple.systempreferences:com.apple.Notifications-Settings.extension`, not an anchor under Privacy and Security.
+
+The first grant took about twenty seconds before Settings opened, because the authorization prompt never produced an answer and `--grant` waits that long before falling back. The command now says what it is waiting for. If this bites again, notification authorization can be interrogated for a denied state (`getNotificationSettings`), which would let it skip straight to the Settings pane; accessibility and screen recording offer no such signal.

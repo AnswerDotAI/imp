@@ -56,8 +56,13 @@ The cost of `[system]` is that clang stops reporting warnings from those headers
 - Categories are otherwise independent: Screen Recording stayed false when Accessibility was granted.
 - Carbon's `RegisterEventHotKey` needs no permission at all. The system watches the keyboard and delivers only your combo, so there is no stream to protect. Event taps and synthetic input are what need Accessibility.
 - macOS shows each dialog once per app per category. After a denial the request API returns immediately with no UI, so a wizard that only calls request and waits will hang forever on exactly the users who fat-fingered "Don't Allow". Hence request, wait two minutes, then print what to do by hand. An earlier version auto-opened the Settings pane; removed 2026-07-28 as cleverness serving a rare case.
-- `tccutil reset Accessibility com.answerdotai.imp` revokes one category for one bundle, which is how to test the grant flow repeatedly without deleting Settings rows by hand.
+- `Imp --reset <a,b|all>` wraps `tccutil reset <Service> com.answerdotai.imp`, which revokes one category for one bundle and returns it to not-determined, so the dialog comes back on the next `--grant`. Verified 2026-07-29: it needs no privileges even for system-scoped services (ScreenCapture), and `Calendar` is the right tccutil name for a macOS 14 full-access grant (reset flipped `--check calendars` to 1). tccutil exits 0 even when the name matches nothing, so a flipped check is the only real evidence. The name map is `tccNames` in `main.swift`; notifications are not TCC and reset only in their own Settings pane.
 - Notifications are not TCC, so `tccutil` cannot reset them. The reset for testing is in the Notifications Settings pane: right-click the Imp row, then "Reset Notifications", which returns the state to not-determined so the dialog fires again (found 2026-07-28; the Delete-key method blogs describe did not apply).
+
+- A grant is a row in TCC's SQLite database: `~/Library/Application Support/com.apple.TCC/TCC.db` for user-scoped services (Microphone, Camera, Contacts, Calendars, Photos), `/Library/Application Support/com.apple.TCC/TCC.db` for system-scoped ones (Accessibility, Screen Recording, Full Disk Access). The row holds the service, the client bundle id, an auth value, and a `csreq` blob carrying the designated requirement, which is why grants follow identifier and team rather than the binary. Both files are SIP and TCC protected: reading needs Full Disk Access, `tccd` is the only writer, and `tccutil` can only reset.
+- Consent cannot be shipped. The only legitimate pre-grant is an MDM-delivered PPPC profile, and Camera and Microphone can only be *denied* that way, never allowed; Accessibility can be allowed. Screen Recording I believe is deny-only too, unconfirmed. All irrelevant on unmanaged machines, so for our users the click is mandatory and the only lever we have is choosing when it happens.
+- Prompts come in two shapes, which is what `Perm.request`'s `Bool?` return is for. Microphone shows a real Allow button and reports the answer back to the asking process, so `request` returns a definitive `true` and needs no polling; the AVFoundation, EventKit and Contacts families should all behave this way. Accessibility and Screen Recording only offer to open System Settings and never report back, so they return nil and the caller polls. Screen Recording additionally ignores a grant until the process relaunches, and Sequoia re-asks for it periodically.
+- When a category offers tiers, ask for the biggest (decided 2026-07-29): full access to calendars and reminders (`requestFullAccessTo...`, the macOS 14+ API; no fallback to the older one), `.readWrite` for photos, where `.limited` counts as not granted since programs run through Imp expect the whole library. One dialog per category is the whole budget, so spending it on a partial grant wastes it.
 
 ## Why `--grant` asks one at a time
 
@@ -65,6 +70,8 @@ Simultaneous TCC requests collide: asking for accessibility and input monitoring
 
 
 ## Code signing setup
+
+The build recipe is `build_imp()` in `~/aai-ws/macmage/devtool.py`: it holds the bundle id, reads the version from `impVersion` in `main.swift`, passes the Info.plist usage strings from `imp_plist`, and signs without hardened runtime. Adding a permission means adding its usage string to that dict, and nothing else about the build changes.
 
 Imp.app exists to hold macOS permission grants. macOS keys a grant to a stored rule about the program's identity, so how the bundle is signed decides whether a grant survives a rebuild.
 
@@ -91,6 +98,23 @@ Routes that do not work, so nobody retries them:
 
 
 
+## No hardened runtime (decided 2026-07-29)
+
+Imp is signed without `--options runtime`. Hardened runtime buys only one thing: eligibility for notarization, which is only ever checked for files carrying the quarantine attribute, which `curl` does not set. The install path therefore never asks.
+
+What it costs in exchange is not acceptable. With the runtime hardened, TCC refuses to even prompt for a protected resource unless the binary carries the matching entitlement. `tccd` says so exactly:
+
+    Prompting policy for hardened runtime; service: kTCCServiceMicrophone requires
+    entitlement com.apple.security.device.audio-input but it is missing ...
+    Policy disallows prompt; access to kTCCServiceMicrophone denied
+
+The failure mode is the dangerous part. The capture session still starts, still runs, and still delivers sample buffers on schedule; every byte in them is zero. `--mictest` counts non-zero bytes for exactly this reason: the same binary gave 288,768 bytes of digital silence with the runtime hardened, and 287,814 non-zero bytes of real audio without it. Anything that only checks "did the session start" or "did buffers arrive" reports success either way.
+
+So a new permission now costs a usage string in Info.plist and a `Perm` row, with no entitlements list to keep in step with the table. The usage string is not optional: macOS kills the process outright when one is missing, rather than returning an error.
+
+Reclaiming notarization later is cheap. The designated requirement is identifier plus team and takes no notice of the signing flags, so flipping hardened runtime back on loses no grants; verified by an unhardened build reporting `accessibility : true` with no re-granting.
+
+
 ## Notifications and alerts (2026-07-28)
 
 Notification Center refuses a process whose bundle it cannot find, and a window needs an application to own it, so neither is reachable from the Python that macmage runs. Imp has a bundle and an identity already, which is why `--notify` and `--alert` live here rather than there. A notification is about 20ms end to end, including the process spawn.
@@ -106,9 +130,9 @@ The bundle now sets `LSUIElement` rather than `LSBackgroundOnly`, since a backgr
 The authorization "prompt" on macOS is a banner in the top right, not a modal: clicking it opens the Settings pane, and `requestAuthorization`'s completion fires with `granted=false` at that moment, before the person has decided anything (observed live 2026-07-28). So a false completion is not a denial and must fall back to polling; only true is definitive, and `--grant` treats it as such (`answer == true || waitFor(...)`). This also makes the tempting `getNotificationSettings`-for-denied shortcut suspect: whether a banner click-through records `.denied` is unknown, and if it does, the shortcut would report failure to a person who is mid-way to granting.
 
 
-## Windowed widgets (2026-07-28)
+## Wisps, the windowed widgets (2026-07-28)
 
-`runPanel` in `show.swift` is the shared modal shell for every windowed widget: an accessory-activated `NSPanel` run with `runModal`, where Esc (a local `keyDown` monitor) and the close button (`windowWillClose` delegate calling `stopModal`) both end the session. `--web`, `--pick`, and `--show` are the widgets on it.
+`runPanel` in `show.swift` is the shared modal shell for every wisp: an accessory-activated `NSPanel` run with `runModal`, where Esc (a local `keyDown` monitor) and the close button (`windowWillClose` delegate calling `stopModal`) both end the session. `--web`, `--pick`, and `--show` are the widgets on it.
 
 Verified live 2026-07-28, all on the first build:
 
@@ -116,3 +140,18 @@ Verified live 2026-07-28, all on the first build:
 - A faceless app has no menu bar, so cmd-C/cmd-A have no key equivalents to route through. `installEditMenu` (a programmatic Edit menu with nil-target actions) restores them, and works during a modal session.
 - Focus returns to the previous app when the panel closes and the process exits.
 - `NSPanel.hidesOnDeactivate` defaults to true, which hides the panel the moment another app activates, leaving a blocked process with no visible window; `runPanel` sets it false, and `.floating` level keeps panels above other windows until dealt with. macOS has no cross-app modality to offer instead: `runModal` is application-modal only.
+
+## The CLI is the whole API (decided 2026-07-29)
+
+We looked at giving Imp a programmatic API beyond argv: an MCP server (stdio or streamable HTTP), a JSON-lines daemon on a Unix socket, a REST server. Decision: none of them yet. A spawned child speaking over stdin/stdout is already a duplex session, which is all that LSP and stdio MCP are, so a streaming verb writes chunks to stdout as they happen, and a long-running verb treats stdin as its command channel. Two conventions, settled now so future verbs agree: stdout carries the raw payload when the stream is the data (transcript text, PCM bytes), and JSON lines when events have structure.
+
+What we established, so the next look starts here:
+
+- MCP's stdio transport is newline-delimited JSON-RPC 2.0, and the core we would need (`initialize`, `tools/list`, `tools/call`) has been stable through every spec revision including the large 2026-07-28 one, whose churn was in HTTP transport, sessions, and auth. A hand-rolled subset is a few hundred lines of Codable Swift, no dependency. The official Swift SDK is pre-1.0 with breaking minor releases, and a spec version behind the Tier 1 SDKs (TypeScript, Python, Go, C#).
+- No MCP version has partial tool results. Streaming means progress or logging notifications interleaved before the one final result, which over stdio are just more JSON lines. Audio as base64 chunks in notifications costs about 128KB/s at 48kHz 16-bit mono, negligible on a local pipe.
+- A CLI "session id" verb for polling the next chunk was rejected: something must hold the live device between invocations, so it is the daemon in disguise, plus a polling protocol and an expiry policy.
+- If a daemon is ever wanted, serve HTTP over a Unix socket rather than a localhost port: 0600 permissions, no port management, and browsers cannot reach it, while curl and httpx both speak HTTP-over-UDS. Network.framework listeners support this via `requiredLocalEndpoint = NWEndpoint.unix(path:)`, with noisy debug logging; SwiftNIO's Unix-socket support is cleaner but is a dependency. swift-server's async-http-client is a client library only, no help for serving. The 2026-07-28 MCP spec made streamable HTTP stateless (each POST self-contained, answered with JSON or an SSE stream of notifications then the result), which is the design to copy.
+
+Triggers to revisit: an LLM harness should drive Imp's wisps without Python in the middle (add `--mcp`, a thin wrapper mapping each verb to a tool), or a widget must outlive the process that created it (add the socket daemon). Python-side audio capture needs neither: any child of Imp holds the microphone grant, so Python can open the device itself.
+
+macmage's side of this is `Imp()` in `macmage/imp.py`, which builds an Imp argv from Python arguments; the macmage README documents it.

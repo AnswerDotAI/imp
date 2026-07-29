@@ -63,7 +63,7 @@ func notify(_ title: String, _ body: String) -> Int32 {
 }
 
 
-/// Modal panel shell shared by every windowed widget: Esc or the close button ends the
+/// Modal panel shell shared by every wisp: Esc or the close button ends the
 /// modal session. Returns .cancel for those, .OK otherwise.
 final class CloseStopper: NSObject, NSWindowDelegate {
     func windowWillClose(_ n: Notification) { NSApplication.shared.stopModal(withCode: .cancel) }

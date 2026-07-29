@@ -22,13 +22,14 @@ Then grant it what you need, once:
 
 A permission applies only to processes started after you grant it, so restart whatever you are running once the grant is in place.
 
-Upgrading is the same command again, and keeps every grant. To remove Imp, delete `~/Applications/Imp.app` and the `~/.local/bin/Imp` link. Its entries stay in System Settings, Privacy & Security until you remove them there with the minus button.
+Upgrading is the same command again, and keeps every grant. To remove Imp, run `Imp --reset all` first to clear its Privacy & Security entries (the Notifications one is separate, and stays until reset in its own pane), then delete `~/Applications/Imp.app` and the `~/.local/bin/Imp` link.
 
 ## Use
 
     Imp <command> [args...]     run a command with Imp's permissions
     Imp --grant <a,b>           get the named permissions, one at a time
     Imp --check <a,b>           exit 0 if all are granted, else 1
+    Imp --reset <a,b|all>       return categories to not-determined, so a dialog can come again
     Imp --status                report every permission's state
     Imp --version               print the version
     Imp --notify <title> [body]  post a notification
@@ -39,13 +40,13 @@ Upgrading is the same command again, and keeps every grant. To remove Imp, delet
 
 Imp finds the command the way a shell does, so `Imp pytest` works as well as `Imp /path/to/pytest`, and an executable script with a shebang runs as `Imp ./watch_keys.py`. Whatever it runs keeps Imp's permissions, including anything that program starts in turn.
 
-Permission names are `accessibility` (watching input, controlling other apps, sending synthetic keystrokes), `screen` (screen recording, and reading window titles), and `notifications`.
+Permission names are `accessibility` (watching input, controlling other apps, sending synthetic keystrokes), `screen` (screen recording, and reading window titles), `microphone`, `camera`, `speech` (Apple's speech recognition), `contacts`, `calendars`, `reminders`, `photos`, and `notifications`. Imp always asks for the largest surface a category offers: full access for calendars and reminders, read-write for photos.
 
-`--grant` asks for one permission at a time and confirms each before moving to the next. It asks macOS to show its own dialog, then waits up to two minutes for the permission to really work. macOS shows each dialog only once per category, so if you dismissed it in the past no dialog can appear: after the wait, Imp prints the exact `open` command for the right Settings pane and what to switch on, and exits nonzero.
+`--grant` asks for one permission at a time and confirms each before moving to the next. It asks macOS to show its own dialog, then waits up to two minutes for the permission to really work. macOS shows each dialog only once per category, so if you dismissed it in the past no dialog can appear: after the wait, Imp prints the exact `open` command for the right Settings pane and what to switch on, and exits nonzero. `Imp --reset <name>` clears the category back to not-determined, so the dialog can come again; `--reset all` clears every TCC category, which is also the clean way to remove Imp's Settings entries before uninstalling. Like a grant, a reset only applies to processes started afterwards.
 
 `--check` is for scripts. It prints nothing and only sets an exit code.
 
-`--notify`, `--alert`, `--web`, `--pick`, and `--show` exist because macOS will not let an unbundled process speak to the user at all: Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can borrow that. A notification takes about 20ms and needs the `notifications` permission; an alert blocks until its box is dismissed, and exits with the index of the button pressed, so `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script. A pick prints the chosen index to stdout and exits 1 when dismissed, so `i=$(Imp --pick ...)` reads naturally in shell. Esc or the close button dismisses any of the panels.
+`--notify`, `--alert`, `--web`, `--pick`, and `--show` exist because macOS will not let an unbundled process speak to the user at all: Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can borrow that. The windowed ones are Imp's wisps: a panel appears, takes an answer, and vanishes. A notification takes about 20ms and needs the `notifications` permission; an alert blocks until its box is dismissed, and exits with the index of the button pressed, so `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script. A pick prints the chosen index to stdout and exits 1 when dismissed, so `i=$(Imp --pick ...)` reads naturally in shell. Esc or the close button dismisses any wisp.
 
 `--status` reports the state of every permission, and which program macOS thinks it is talking to:
 

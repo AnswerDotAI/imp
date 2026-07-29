@@ -58,43 +58,6 @@ func askSync(_ f: (@escaping @Sendable (Bool) -> Void) -> Void) -> Bool {
     return ok.v
 }
 
-/// TEMPORARY probe: open the default audio device for real and count sample buffers,
-/// because "TCC says no" and "capture fails" are different claims.
-final class MicTap: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate, @unchecked Sendable {
-    let n = Box(0), bytes = Box(0), nonzero = Box(0)
-    func captureOutput(_ o: AVCaptureOutput, didOutput b: CMSampleBuffer, from c: AVCaptureConnection) {
-        n.v += 1
-        // Digital silence is all-zero bytes whatever the sample format, so a byte scan needs no format handling
-        var abl = AudioBufferList(), blk: CMBlockBuffer?
-        CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            b, bufferListSizeNeededOut: nil, bufferListOut: &abl,
-            bufferListSize: MemoryLayout<AudioBufferList>.size, blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil, flags: 0, blockBufferOut: &blk)
-        for buf in UnsafeMutableAudioBufferListPointer(&abl) {
-            guard let d = buf.mData else { continue }
-            let raw = UnsafeRawBufferPointer(start: d, count: Int(buf.mDataByteSize))
-            bytes.v += raw.count
-            nonzero.v += raw.reduce(0) { $1 == 0 ? $0 : $0 + 1 }
-        }
-    }
-}
-
-func micTest() -> Int32 {
-    print("authorizationStatus: \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue) (0 notDetermined, 1 restricted, 2 denied, 3 authorized)")
-    guard let dev = AVCaptureDevice.default(for: .audio) else { print("no audio device"); return 1 }
-    print("device: \(dev.localizedName)")
-    let sess = AVCaptureSession(), outp = AVCaptureAudioDataOutput(), tap = MicTap()
-    do { sess.addInput(try AVCaptureDeviceInput(device: dev)) }
-    catch { print("input failed: \(error)"); return 1 }
-    outp.setSampleBufferDelegate(tap, queue: DispatchQueue(label: "mic"))
-    sess.addOutput(outp)
-    sess.startRunning()
-    Thread.sleep(forTimeInterval: 1.5)
-    sess.stopRunning()
-    print("buffers in 1.5s: \(tap.n.v), bytes: \(tap.bytes.v), nonzero bytes: \(tap.nonzero.v)")
-    return tap.n.v > 0 ? 0 : 1
-}
-
 struct Perm {
     let name: String
     let pane: String       // Settings URL, printed when the one-shot dialog does not come
@@ -139,7 +102,15 @@ func perm(_ name: String) -> Perm? { perms.first { $0.name == name } }
 
 /// Ask a fresh copy of ourselves, because a grant made after launch is invisible to the
 /// process that requested it (Screen Recording never updates in place; Accessibility may not).
-func granted(_ p: Perm) -> Bool { wait(spawn([exePath(getpid()), "--check", p.name])) == 0 }
+/// Its stdout goes to /dev/null for the spawn's brief life, so `--check`'s "ok" never leaks into our own output.
+func granted(_ p: Perm) -> Bool {
+    let saved = dup(1)
+    let devnull = open("/dev/null", O_WRONLY)
+    dup2(devnull, 1)
+    close(devnull)
+    defer { dup2(saved, 1); close(saved) }
+    return wait(spawn([exePath(getpid()), "--check", p.name])) == 0
+}
 
 func waitFor(_ p: Perm, seconds: Double) -> Bool {
     let deadline = Date().addingTimeInterval(seconds)
@@ -150,11 +121,49 @@ func waitFor(_ p: Perm, seconds: Double) -> Bool {
     return false
 }
 
+
+/// Automation consent is per target app, asked with an Apple Events round trip rather than
+/// a Perm row. With `ask`, the dialog can only appear while the target is running, and the
+/// answer comes back synchronously, so a zero return is definitive.
+func automationStatus(_ bundle: String, ask: Bool) -> OSStatus {
+    var addr = AEAddressDesc()
+    let data = Array(bundle.utf8)
+    data.withUnsafeBufferPointer { _ = AECreateDesc(typeApplicationBundleID, $0.baseAddress, data.count, &addr) }
+    defer { AEDisposeDesc(&addr) }
+    return AEDeterminePermissionToAutomateTarget(&addr, typeWildCard, typeWildCard, ask)
+}
+
+func autoTarget(_ name: String) -> String? {
+    name.hasPrefix("automation:") ? String(name.dropFirst("automation:".count)) : nil
+}
+
+func checkName(_ name: String) -> Bool {
+    if let t = autoTarget(name) { return automationStatus(t, ask: false) == noErr }
+    return perm(name)?.check() ?? false
+}
+
+func grantAutomation(_ name: String, _ target: String) -> Bool {
+    switch automationStatus(target, ask: true) {
+    case noErr: print("\(name): granted"); return true
+    case -600: print("\(name): the target app is not running; open it and re-run")
+    case let st: print("""
+        \(name): STILL MISSING (status \(st))
+        # open "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        then switch the app on under Imp there, and re-run this command to confirm.
+        """)
+    }
+    return false
+}
 /// macOS shows each permission dialog once per app per category, so a denied grant can
 /// never be re-prompted: when no dialog comes, all we can honestly do is say what to do next.
 func grant(_ names: [String]) -> Int32 {
     var failed = [String]()
     for name in names {
+        if let t = autoTarget(name) {
+            if checkName(name) { print("\(name): already granted"); continue }
+            if !grantAutomation(name, t) { failed.append(name) }
+            continue
+        }
         guard let p = perm(name) else {
             print("unknown permission: \(name) (known: \(perms.map(\.name).joined(separator: ", ")))")
             return 2
@@ -179,7 +188,8 @@ func grant(_ names: [String]) -> Int32 {
 /// tccutil's names for our categories. Notifications are missing because they are not TCC.
 let tccNames = ["accessibility": "Accessibility", "screen": "ScreenCapture", "microphone": "Microphone",
                 "camera": "Camera", "speech": "SpeechRecognition", "contacts": "AddressBook",
-                "calendars": "Calendar", "reminders": "Reminders", "photos": "Photos"]
+                "calendars": "Calendar", "reminders": "Reminders", "photos": "Photos",
+                "automation": "AppleEvents"]  // resets every target at once: tccutil cannot scope to one
 
 /// Return categories to not-determined, so the next --grant can show a dialog again, even
 /// after a past denial. Like a grant, a reset only applies to processes started after it.
@@ -187,7 +197,7 @@ func reset(_ names: [String]) -> Int32 {
     let bundle = Bundle.main.bundleIdentifier ?? "com.answerdotai.imp"
     var failed = [String]()
     for name in names {
-        guard let svc = name == "all" ? "All" : tccNames[name] else {
+        guard let svc = name == "all" ? "All" : tccNames[autoTarget(name) != nil ? "automation" : name] else {
             if name == "notifications" {
                 print("notifications: not TCC. In System Settings, Notifications, right-click Imp and choose Reset Notifications.")
             } else {
@@ -208,11 +218,11 @@ func status() {
     for p in perms { print("\(p.name.padding(toLength: 14, withPad: " ", startingAt: 0)): \(p.check())") }
 }
 
-func usage() -> Never {
+func usage(_ code: Int32 = 2) -> Never {
     print("""
     usage: Imp <command> [args...]      run a command with Imp's permissions
            Imp --grant <a,b>            get the named permissions, one at a time
-           Imp --check <a,b>            exit 0 if all are granted, else 1
+           Imp --check <a,b>            print "ok" and exit 0 if all are granted, else exit 1 silently
            Imp --reset <a,b|all>        return categories to not-determined, so a dialog can come again
            Imp --status                 report every permission's state
            Imp --version                print the version
@@ -221,8 +231,11 @@ func usage() -> Never {
            Imp --web <title> <url|file|->      show a web page in a panel; "-" reads HTML from stdin
            Imp --pick <title> <item...>        choose by digit (max 10 items); the index goes to stdout, Esc exits 1
            Imp --show <title>                  show stdin in a scrollable monospaced panel
+           Imp --snap <path|->          capture a still from the default camera; '-' writes it to stdout
+
+    permissions: \(perms.map(\.name).joined(separator: ", ")), automation:<bundle-id>
     """)
-    exit(2)
+    exit(code)
 }
 
 let args = CommandLine.arguments
@@ -237,6 +250,7 @@ if !amImp() { exit(wait(spawn([exePath(getpid())] + args.dropFirst(), disclaim: 
 if args.count < 2 { usage() }
 switch args[1] {
 case "--status": status(); exit(0)
+case "--help", "-h": usage(0)
 case "--reset":
     if args.count < 3 { usage() }
     exit(reset(args[2].split(separator: ",").map(String.init)))
@@ -244,7 +258,9 @@ case "--grant", "--check":
     if args.count < 3 { usage() }
     let names = args[2].split(separator: ",").map(String.init)
     if args[1] == "--grant" { exit(grant(names)) }
-    exit(names.allSatisfy { perm($0)?.check() ?? false } ? 0 : 1)
+    if !names.allSatisfy(checkName) { exit(1) }
+    print("ok")
+    exit(0)
 case "--notify":
     if args.count < 3 { usage() }
     exit(notify(args[2], args.count > 3 ? args[3] : ""))
@@ -261,6 +277,10 @@ case "--pick":
 case "--show":
     if args.count < 3 { usage() }
     exit(show(args[2]))
-case "--mictest": exit(micTest())  // TEMPORARY probe: does the mic actually deliver samples?
-default: exit(wait(spawn(Array(args.dropFirst()))))
+case "--snap":
+    if args.count < 3 { usage() }
+    exit(snap(args[2]))
+default:
+    if args[1].hasPrefix("-") { print("unknown option: \(args[1])"); usage() }
+    exit(wait(spawn(Array(args.dropFirst()))))
 }

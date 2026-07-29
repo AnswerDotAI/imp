@@ -28,7 +28,7 @@ Upgrading is the same command again, and keeps every grant. To remove Imp, run `
 
     Imp <command> [args...]     run a command with Imp's permissions
     Imp --grant <a,b>           get the named permissions, one at a time
-    Imp --check <a,b>           exit 0 if all are granted, else 1
+    Imp --check <a,b>           print "ok" and exit 0 if all are granted, else exit 1 silently
     Imp --reset <a,b|all>       return categories to not-determined, so a dialog can come again
     Imp --status                report every permission's state
     Imp --version               print the version
@@ -37,6 +37,7 @@ Upgrading is the same command again, and keeps every grant. To remove Imp, run `
     Imp --web <title> <url|file|->           show a web page in a panel; "-" reads HTML from stdin, Esc closes
     Imp --pick <title> <item...>             choose by digit (up to ten items); the index goes to stdout
     Imp --show <title>                       show stdin in a scrollable monospaced panel
+    Imp --snap <path|->                      capture a still from the default camera; '-' writes it to stdout
 
 Imp finds the command the way a shell does, so `Imp pytest` works as well as `Imp /path/to/pytest`, and an executable script with a shebang runs as `Imp ./watch_keys.py`. Whatever it runs keeps Imp's permissions, including anything that program starts in turn.
 
@@ -44,7 +45,7 @@ Permission names are `accessibility` (watching input, controlling other apps, se
 
 `--grant` asks for one permission at a time and confirms each before moving to the next. It asks macOS to show its own dialog, then waits up to two minutes for the permission to really work. macOS shows each dialog only once per category, so if you dismissed it in the past no dialog can appear: after the wait, Imp prints the exact `open` command for the right Settings pane and what to switch on, and exits nonzero. `Imp --reset <name>` clears the category back to not-determined, so the dialog can come again; `--reset all` clears every TCC category, which is also the clean way to remove Imp's Settings entries before uninstalling. Like a grant, a reset only applies to processes started afterwards.
 
-`--check` is for scripts. It prints nothing and only sets an exit code.
+`--check` prints `ok` and exits 0 when every named permission is granted, else exits 1 printing nothing, so both humans (and LLMs) reading output and scripts reading the exit code get an answer.
 
 `--notify`, `--alert`, `--web`, `--pick`, and `--show` exist because macOS will not let an unbundled process speak to the user at all: Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can borrow that. The windowed ones are Imp's wisps: a panel appears, takes an answer, and vanishes. A notification takes about 20ms and needs the `notifications` permission; an alert blocks until its box is dismissed, and exits with the index of the button pressed, so `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script. A pick prints the chosen index to stdout and exits 1 when dismissed, so `i=$(Imp --pick ...)` reads naturally in shell. Esc or the close button dismisses any wisp.
 

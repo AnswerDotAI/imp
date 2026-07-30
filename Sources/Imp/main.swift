@@ -218,6 +218,28 @@ func status() {
     for p in perms { print("\(p.name.padding(toLength: 14, withPad: " ", startingAt: 0)): \(p.check())") }
 }
 
+/// Pull the shared panel flags out of a wisp verb's arguments, leaving the positionals.
+func panelOpts(_ rest: [String]) -> (pos: [String], live: Bool, frame: FrameSpec?) {
+    var pos = [String](), live = false, frame: FrameSpec? = nil
+    var i = 0
+    while i < rest.count {
+        let a = rest[i]
+        if a == "--live" { live = true }
+        else if a == "--frame" {
+            i += 1
+            guard i < rest.count, let f = FrameSpec(rest[i]) else {
+                print("bad --frame spec\(i < rest.count ? ": \(rest[i])" : "")")
+                usage()
+            }
+            frame = f
+        }
+        else { pos.append(a) }
+        i += 1
+    }
+    return (pos, live, frame)
+}
+
+
 func usage(_ code: Int32 = 2) -> Never {
     print("""
     usage: Imp <command> [args...]      run a command with Imp's permissions
@@ -228,9 +250,14 @@ func usage(_ code: Int32 = 2) -> Never {
            Imp --version                print the version
            Imp --notify <title> [body]  post a notification
            Imp --alert <title> [body] [button...]  show a message box; the exit code is the button index
-           Imp --web <title> <url|file|->      show a web page in a panel; "-" reads HTML from stdin
-           Imp --pick <title> <item...>        choose by digit (max 10 items); the index goes to stdout, Esc exits 1
+           Imp --web <title> [url|file|-]      show a web page in a panel; "-" reads HTML from stdin, no target is about:blank
+           Imp --pick <title> [--keys <chars>] <item...>  choose by key: one char per item, or digits; index to stdout
            Imp --show <title>                  show stdin in a scrollable monospaced panel
+
+    --web and --show take --live: stdin becomes the lifeline (a line per update: text for
+    --show, JS evaluated in the page for --web), EOF exits 0, closing the panel exits 2,
+    and the panel never takes focus. --web, --pick, and --show take --frame <spec>, where
+    spec is tr|tl|br|bl (corner), 400x300 (size), or 400x300@tr (both).
            Imp --snap <path|->          capture a still from the default camera; '-' writes it to stdout
 
     permissions: \(perms.map(\.name).joined(separator: ", ")), automation:<bundle-id>
@@ -269,14 +296,24 @@ case "--alert":
     let buttons = args.count > 4 ? Array(args[4...]) : ["OK"]
     exit(alert(args[2], args.count > 3 ? args[3] : "", buttons: buttons))
 case "--web":
-    if args.count < 4 { usage() }
-    exit(web(args[2], args[3]))
+    let (pos, live, frame) = panelOpts(Array(args.dropFirst(2)))
+    guard pos.count == 2 || (live && pos.count == 1) else { usage() }  // a target is optional only when live JS can build the page
+    exit(web(pos[0], pos.count > 1 ? pos[1] : nil, frame: frame, live: live))
 case "--pick":
-    if args.count < 4 || args.count > 13 { usage() }  // a digit selects, so ten items at most
-    exit(pick(args[2], Array(args[3...])))
+    var rest = Array(args.dropFirst(2)), keys: String? = nil
+    if let i = rest.firstIndex(of: "--keys") {
+        guard i + 1 < rest.count else { usage() }
+        keys = rest[i + 1]
+        rest.removeSubrange(i...(i + 1))
+    }
+    let (pos, live, frame) = panelOpts(rest)
+    if live { print("--pick cannot be --live: a pick exists to be answered"); usage() }
+    guard pos.count >= 2 else { usage() }
+    exit(pick(pos[0], Array(pos.dropFirst()), keys: keys, frame: frame))
 case "--show":
-    if args.count < 3 { usage() }
-    exit(show(args[2]))
+    let (pos, live, frame) = panelOpts(Array(args.dropFirst(2)))
+    guard pos.count == 1 else { usage() }
+    exit(show(pos[0], frame: frame, live: live))
 case "--snap":
     if args.count < 3 { usage() }
     exit(snap(args[2]))

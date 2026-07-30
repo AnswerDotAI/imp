@@ -34,8 +34,8 @@ Upgrading is the same command again, and keeps every grant. To remove Imp, run `
     Imp --version               print the version
     Imp --notify <title> [body]  post a notification
     Imp --alert <title> [body] [button...]   show a message box, and exit with the button's index
-    Imp --web <title> <url|file|->           show a web page in a panel; "-" reads HTML from stdin, Esc closes
-    Imp --pick <title> <item...>             choose by digit (up to ten items); the index goes to stdout
+    Imp --web <title> [url|file|-]           show a web page in a panel; "-" reads HTML from stdin, Esc closes
+    Imp --pick <title> [--keys <chars>] <item...>  choose by key: one char per item in order, or digits when omitted
     Imp --show <title>                       show stdin in a scrollable monospaced panel
     Imp --snap <path|->                      capture a still from the default camera; '-' writes it to stdout
 
@@ -48,6 +48,8 @@ Permission names are `accessibility` (watching input, controlling other apps, se
 `--check` prints `ok` and exits 0 when every named permission is granted, else exits 1 printing nothing, so both humans (and LLMs) reading output and scripts reading the exit code get an answer.
 
 `--notify`, `--alert`, `--web`, `--pick`, and `--show` exist because macOS will not let an unbundled process speak to the user at all: Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can borrow that. The windowed ones are Imp's wisps: a panel appears, takes an answer, and vanishes. A notification takes about 20ms and needs the `notifications` permission; an alert blocks until its box is dismissed, and exits with the index of the button pressed, so `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script. A pick prints the chosen index to stdout and exits 1 when dismissed, so `i=$(Imp --pick ...)` reads naturally in shell. Esc or the close button dismisses any wisp.
+
+Every wisp has three properties: content (what it renders), geometry, and an end-condition. Geometry is `--frame <spec>` on `--web`, `--pick`, and `--show`: `tr`/`tl`/`br`/`bl` pins the panel to that corner of the visible screen, `400x300` sets a size centered, and `400x300@tr` does both. The end-condition changes with `--live` on `--show` and `--web`: stdin becomes the panel's lifeline, each line is one update (replacing the text for `--show`; evaluated as JavaScript in the loaded page for `--web`, whose target defaults to `about:blank` so the first line can build the page), EOF exits 0, and the close button exits 2, since a dismissed lamp is information the caller may want. A live panel never takes key focus, so it cannot interrupt typing, and Esc cannot reach it: `tail -f log | Imp --show ticker --live --frame br` is a corner ticker that leaves your keyboard alone.
 
 `--status` reports the state of every permission, and which program macOS thinks it is talking to:
 

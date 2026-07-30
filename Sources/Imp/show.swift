@@ -80,19 +80,62 @@ final class CloseStopper: NSObject, NSWindowDelegate {
     NSApplication.shared.mainMenu = main
 }
 
-@MainActor func runPanel(_ title: String, _ content: NSView, w: CGFloat = 800, h: CGFloat = 600) -> NSApplication.ModalResponse {
-    let app = NSApplication.shared
-    app.setActivationPolicy(.accessory)
-    installEditMenu()
-    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
-                        styleMask: [.titled, .closable], backing: .buffered, defer: false)
+/// Where a panel goes, parsed from `--frame`: "tr"/"tl"/"br"/"bl" pin to that corner of the
+/// visible screen (dock and menu bar respected), "400x300" sets the size centered, "400x300@tr" both.
+struct FrameSpec {
+    var w: CGFloat?, h: CGFloat?, corner: String?
+    init?(_ s: String) {
+        var size = s
+        if let at = s.firstIndex(of: "@") {
+            size = String(s[..<at])
+            corner = String(s[s.index(after: at)...])
+        } else if ["tl", "tr", "bl", "br"].contains(s) {
+            size = ""
+            corner = s
+        }
+        if let c = corner, !["tl", "tr", "bl", "br"].contains(c) { return nil }
+        if !size.isEmpty {
+            let parts = size.split(separator: "x")
+            guard parts.count == 2, let pw = Double(parts[0]), let ph = Double(parts[1]) else { return nil }
+            w = pw
+            h = ph
+        }
+        if w == nil && corner == nil { return nil }
+    }
+}
+
+/// A panel that can never become key: it cannot steal focus while the person works
+/// elsewhere, and Esc cannot reach it, since Esc is only delivered to the key window.
+final class KeylessPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+}
+
+@MainActor func makePanel(_ title: String, _ content: NSView, w: CGFloat, h: CGFloat, frame: FrameSpec?, live: Bool = false) -> NSPanel {
+    let w = frame?.w ?? w, h = frame?.h ?? h
+    var style: NSWindow.StyleMask = [.titled, .closable]
+    if live { style.insert(.nonactivatingPanel) }
+    let rect = NSRect(x: 0, y: 0, width: w, height: h)
+    let panel = live ? KeylessPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
+                     : NSPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
     panel.title = title
     panel.hidesOnDeactivate = false  // the NSPanel default hides it when another app activates, leaving a blocked process with no visible window
     panel.level = .floating          // stay above other windows until dealt with; macOS has no cross-app modality
     content.frame = panel.contentView!.bounds
     content.autoresizingMask = [.width, .height]
     panel.contentView!.addSubview(content)
-    panel.center()
+    if let c = frame?.corner, let vis = NSScreen.main?.visibleFrame {
+        let m: CGFloat = 16, sz = panel.frame.size  // the window frame, so the title bar is accounted for
+        panel.setFrameOrigin(NSPoint(x: c.hasSuffix("l") ? vis.minX + m : vis.maxX - sz.width - m,
+                                     y: c.hasPrefix("b") ? vis.minY + m : vis.maxY - sz.height - m))
+    } else { panel.center() }
+    return panel
+}
+
+@MainActor func runPanel(_ title: String, _ content: NSView, w: CGFloat = 800, h: CGFloat = 600, frame: FrameSpec? = nil) -> NSApplication.ModalResponse {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    installEditMenu()
+    let panel = makePanel(title, content, w: w, h: h, frame: frame)
     let stopper = CloseStopper()
     panel.delegate = stopper
     let mon = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
@@ -107,59 +150,117 @@ final class CloseStopper: NSObject, NSWindowDelegate {
     return res
 }
 
-/// A web page (or stdin HTML, when `target` is "-") in a modal panel.
-@MainActor func web(_ title: String, _ target: String) -> Int32 {
+/// Ends a live panel when the person closes it: distinct from EOF's 0, since "your lamp
+/// was dismissed" is information the caller may want.
+final class LiveCloser: NSObject, NSWindowDelegate {
+    func windowWillClose(_ n: Notification) { exit(2) }
+}
+
+/// The leashed mode shared by live wisps: stdin is the lifeline. Each stdin line goes to
+/// `onLine` on the main thread, EOF exits 0, the close button exits 2. The panel never
+/// takes key focus and the app is never activated, so the person keeps typing elsewhere.
+@MainActor func runLive(_ title: String, _ content: NSView, w: CGFloat, h: CGFloat, frame: FrameSpec?, onLine: @escaping (String) -> Void) -> Never {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let panel = makePanel(title, content, w: w, h: h, frame: frame, live: true)
+    let closer = LiveCloser()
+    panel.delegate = closer
+    panel.orderFrontRegardless()
+    let handler = Box(onLine)
+    Thread.detachNewThread {
+        while let line = readLine(strippingNewline: true) {
+            DispatchQueue.main.async { MainActor.assumeIsolated { handler.v(line) } }
+        }
+        DispatchQueue.main.async { exit(0) }
+    }
+    app.run()
+    exit(0)
+}
+
+/// A web page in a panel. `target` "-" reads HTML from stdin; nil is about:blank. Live mode
+/// evaluates each stdin line as JavaScript in the loaded page: the page defines its own
+/// update functions and the caller sends calls, so updates are incremental and flicker-free.
+@MainActor func web(_ title: String, _ target: String?, frame: FrameSpec? = nil, live: Bool = false) -> Int32 {
     let v = WKWebView(frame: .zero)
-    if target == "-" {
+    let t = target ?? "about:blank"
+    if t == "-" {
+        if live {
+            FileHandle.standardError.write("Imp: --live reads JS lines from stdin, so \"-\" has no meaning; pass a url or file, or omit for about:blank\n".data(using: .utf8)!)
+            return 2
+        }
         let html = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
         v.loadHTMLString(html, baseURL: nil)
-    } else if let u = URL(string: target), u.scheme != nil {
+    } else if let u = URL(string: t), u.scheme != nil {
         v.load(URLRequest(url: u))
     } else {
-        let f = URL(fileURLWithPath: target)
+        let f = URL(fileURLWithPath: t)
         v.loadFileURL(f, allowingReadAccessTo: f.deletingLastPathComponent())
     }
-    _ = runPanel(title, v)
+    if live {
+        runLive(title, v, w: 800, h: 600, frame: frame) { line in
+            v.evaluateJavaScript(line) { _, e in
+                if let e { FileHandle.standardError.write("Imp: \(e.localizedDescription)\n".data(using: .utf8)!) }
+            }
+        }
+    }
+    _ = runPanel(title, v, frame: frame)
     return 0
 }
 
 
-/// A numbered menu in a modal panel: press an item's digit to choose it. The chosen index
-/// goes to stdout (not the exit code, which dies at 255); Esc or close prints nothing.
-@MainActor func pick(_ title: String, _ items: [String]) -> Int32 {
+/// A key-driven menu in a panel. `keys` assigns one keystroke per item, in order; nil
+/// assigns incrementing digits. The chosen index goes to stdout (not the exit
+/// code, which dies at 255); Esc or close prints nothing and exits 1.
+@MainActor func pick(_ title: String, _ items: [String], keys: String? = nil, frame: FrameSpec? = nil) -> Int32 {
+    var assigned = [Character]()
+    if let keys {
+        guard keys.count == items.count else {
+            FileHandle.standardError.write("Imp: --keys needs one character per item\n".data(using: .utf8)!)
+            return 2
+        }
+        assigned = Array(keys.lowercased())
+    } else {
+        guard items.count <= 10 else {
+            FileHandle.standardError.write("Imp: more than ten items need --keys; only ten digits exist\n".data(using: .utf8)!)
+            return 2
+        }
+        assigned = items.indices.map { Character(String($0)) }
+    }
     let stack = NSStackView()
     stack.orientation = .vertical
     stack.alignment = .leading
     stack.spacing = 6
     stack.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
-    for (i, item) in items.enumerated() {
-        let l = NSTextField(labelWithString: "\(i)  \(item)")
+    for (i, label) in items.enumerated() {
+        let l = NSTextField(labelWithString: "\(assigned[i])  \(label)")
         l.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         l.lineBreakMode = .byTruncatingTail
         stack.addArrangedSubview(l)
     }
     let mon = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
-        if let d = Int(e.characters ?? ""), d < items.count {
-            NSApplication.shared.stopModal(withCode: .init(1000 + d))
+        if let ch = e.characters?.lowercased().first, let idx = assigned.firstIndex(of: ch) {
+            NSApplication.shared.stopModal(withCode: .init(1000 + idx))
             return nil
         }
         return e
     }
-    let res = runPanel(title, stack, w: 460, h: CGFloat(items.count * 26 + 28))
+    let res = runPanel(title, stack, w: 460, h: CGFloat(items.count * 26 + 28), frame: frame)
     if let mon { NSEvent.removeMonitor(mon) }
     guard res.rawValue >= 1000 else { return 1 }
     print(res.rawValue - 1000)
     return 0
 }
 
-/// Stdin, monospaced and selectable, in a scrollable modal panel.
-@MainActor func show(_ title: String) -> Int32 {
+/// Stdin, monospaced and selectable, in a scrollable panel. Live mode replaces the text
+/// with each stdin line as it arrives, which is all a badge or ticker needs.
+@MainActor func show(_ title: String, frame: FrameSpec? = nil, live: Bool = false) -> Int32 {
     let sv = NSTextView.scrollableTextView()
     let tv = sv.documentView as! NSTextView
-    tv.string = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
     tv.isEditable = false
     tv.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
     tv.textContainerInset = NSSize(width: 8, height: 8)
-    _ = runPanel(title, sv, w: 640, h: 420)
+    if live { runLive(title, sv, w: 220, h: 72, frame: frame) { tv.string = $0 } }
+    tv.string = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    _ = runPanel(title, sv, w: 640, h: 420, frame: frame)
     return 0
 }

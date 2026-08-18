@@ -219,12 +219,13 @@ func status() {
 }
 
 /// Pull the shared panel flags out of a wisp verb's arguments, leaving the positionals.
-func panelOpts(_ rest: [String]) -> (pos: [String], live: Bool, frame: FrameSpec?) {
-    var pos = [String](), live = false, frame: FrameSpec? = nil
+func panelOpts(_ rest: [String]) -> (pos: [String], live: Bool, key: Bool, frame: FrameSpec?) {
+    var pos = [String](), live = false, key = false, frame: FrameSpec? = nil
     var i = 0
     while i < rest.count {
         let a = rest[i]
         if a == "--live" { live = true }
+        else if a == "--key" { key = true }
         else if a == "--frame" {
             i += 1
             guard i < rest.count, let f = FrameSpec(rest[i]) else {
@@ -236,7 +237,7 @@ func panelOpts(_ rest: [String]) -> (pos: [String], live: Bool, frame: FrameSpec
         else { pos.append(a) }
         i += 1
     }
-    return (pos, live, frame)
+    return (pos, live, key, frame)
 }
 
 
@@ -256,8 +257,10 @@ func usage(_ code: Int32 = 2) -> Never {
 
     --web and --show take --live: stdin becomes the lifeline (a line per update: text for
     --show, JS evaluated in the page for --web), EOF exits 0, closing the panel exits 2,
-    and the panel never takes focus. --web, --pick, and --show take --frame <spec>, where
-    spec is tr|tl|br|bl (corner), 400x300 (size), or 400x300@tr (both).
+    and the panel never takes focus. --web --live also takes --key: the panel takes the
+    keyboard while the previous app stays frontmost, and the page can emit lines to stdout
+    with webkit.messageHandlers.imp.postMessage(text). --web, --pick, and --show take
+    --frame <spec>, where spec is tr|tl|br|bl (corner), 400x300 (size), or 400x300@tr (both).
            Imp --snap <path|->          capture a still from the default camera; '-' writes it to stdout
 
     permissions: \(perms.map(\.name).joined(separator: ", ")), automation:<bundle-id>
@@ -296,9 +299,10 @@ case "--alert":
     let buttons = args.count > 4 ? Array(args[4...]) : ["OK"]
     exit(alert(args[2], args.count > 3 ? args[3] : "", buttons: buttons))
 case "--web":
-    let (pos, live, frame) = panelOpts(Array(args.dropFirst(2)))
+    let (pos, live, key, frame) = panelOpts(Array(args.dropFirst(2)))
     guard pos.count == 2 || (live && pos.count == 1) else { usage() }  // a target is optional only when live JS can build the page
-    exit(web(pos[0], pos.count > 1 ? pos[1] : nil, frame: frame, live: live))
+    if key && !live { print("--key requires --live: a modal panel already takes focus"); usage() }
+    exit(web(pos[0], pos.count > 1 ? pos[1] : nil, frame: frame, live: live, key: key))
 case "--pick":
     var rest = Array(args.dropFirst(2)), keys: String? = nil
     if let i = rest.firstIndex(of: "--keys") {
@@ -306,12 +310,14 @@ case "--pick":
         keys = rest[i + 1]
         rest.removeSubrange(i...(i + 1))
     }
-    let (pos, live, frame) = panelOpts(rest)
+    let (pos, live, key, frame) = panelOpts(rest)
     if live { print("--pick cannot be --live: a pick exists to be answered"); usage() }
+    if key { print("--pick cannot take --key: a pick already has the keyboard"); usage() }
     guard pos.count >= 2 else { usage() }
     exit(pick(pos[0], Array(pos.dropFirst()), keys: keys, frame: frame))
 case "--show":
-    let (pos, live, frame) = panelOpts(Array(args.dropFirst(2)))
+    let (pos, live, key, frame) = panelOpts(Array(args.dropFirst(2)))
+    if key { print("--show cannot take --key: use --web for an interactive page"); usage() }
     guard pos.count == 1 else { usage() }
     exit(show(pos[0], frame: frame, live: live))
 case "--snap":

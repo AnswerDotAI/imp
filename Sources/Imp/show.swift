@@ -110,13 +110,18 @@ final class KeylessPanel: NSPanel {
     override var canBecomeKey: Bool { false }
 }
 
-@MainActor func makePanel(_ title: String, _ content: NSView, w: CGFloat, h: CGFloat, frame: FrameSpec?, live: Bool = false) -> NSPanel {
+final class KeyPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+@MainActor func makePanel(_ title: String, _ content: NSView, w: CGFloat, h: CGFloat, frame: FrameSpec?, live: Bool = false, key: Bool = false) -> NSPanel {
     let w = frame?.w ?? w, h = frame?.h ?? h
     var style: NSWindow.StyleMask = [.titled, .closable]
     if live { style.insert(.nonactivatingPanel) }
     let rect = NSRect(x: 0, y: 0, width: w, height: h)
-    let panel = live ? KeylessPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
-                     : NSPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
+    let panel = !live ? NSPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
+              : key   ? KeyPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
+                      : KeylessPanel(contentRect: rect, styleMask: style, backing: .buffered, defer: false)
     panel.title = title
     panel.hidesOnDeactivate = false  // the NSPanel default hides it when another app activates, leaving a blocked process with no visible window
     panel.level = .floating          // stay above other windows until dealt with; macOS has no cross-app modality
@@ -157,15 +162,19 @@ final class LiveCloser: NSObject, NSWindowDelegate {
 }
 
 /// The leashed mode shared by live wisps: stdin is the lifeline. Each stdin line goes to
-/// `onLine` on the main thread, EOF exits 0, the close button exits 2. The panel never
-/// takes key focus and the app is never activated, so the person keeps typing elsewhere.
-@MainActor func runLive(_ title: String, _ content: NSView, w: CGFloat, h: CGFloat, frame: FrameSpec?, onLine: @escaping (String) -> Void) -> Never {
+/// `onLine` on the main thread, EOF exits 0, the close button exits 2, and a parent's
+/// SIGTERM exits 0 so a terminate never reads as a dismissal. The app is never activated,
+/// so the person's frontmost app keeps its place; without `key` the panel never takes key
+/// focus either, and with `key` it takes the keyboard while that app stays frontmost.
+@MainActor func runLive(_ title: String, _ content: NSView, w: CGFloat, h: CGFloat, frame: FrameSpec?, key: Bool = false, onLine: @escaping (String) -> Void) -> Never {
+    signal(SIGTERM) { _ in exit(0) }  // exit 2 must keep meaning "the person closed the panel": AppKit answers a terminate by closing windows first, so a caller killing its own wisp would exit 2 and read as a dismissal
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
-    let panel = makePanel(title, content, w: w, h: h, frame: frame, live: true)
+    let panel = makePanel(title, content, w: w, h: h, frame: frame, live: true, key: key)
     let closer = LiveCloser()
     panel.delegate = closer
-    panel.orderFrontRegardless()
+    if key { panel.makeKeyAndOrderFront(nil); panel.makeFirstResponder(content) }
+    else { panel.orderFrontRegardless() }
     let handler = Box(onLine)
     Thread.detachNewThread {
         while let line = readLine(strippingNewline: true) {
@@ -177,11 +186,22 @@ final class LiveCloser: NSObject, NSWindowDelegate {
     exit(0)
 }
 
+final class WebBridge: NSObject, WKScriptMessageHandler {
+    func userContentController(_ ucc: WKUserContentController, didReceive m: WKScriptMessage) {
+        let s = m.body as? String ?? String(describing: m.body)
+        FileHandle.standardOutput.write((s + "\n").data(using: .utf8)!)
+    }
+}
+
 /// A web page in a panel. `target` "-" reads HTML from stdin; nil is about:blank. Live mode
 /// evaluates each stdin line as JavaScript in the loaded page: the page defines its own
 /// update functions and the caller sends calls, so updates are incremental and flicker-free.
-@MainActor func web(_ title: String, _ target: String?, frame: FrameSpec? = nil, live: Bool = false) -> Int32 {
-    let v = WKWebView(frame: .zero)
+/// A live page can also send: webkit.messageHandlers.imp.postMessage(text) writes `text`
+/// to stdout as one line, unbuffered, so events reach the caller as they happen.
+@MainActor func web(_ title: String, _ target: String?, frame: FrameSpec? = nil, live: Bool = false, key: Bool = false) -> Int32 {
+    let cfg = WKWebViewConfiguration()
+    if live { cfg.userContentController.add(WebBridge(), name: "imp") }
+    let v = WKWebView(frame: .zero, configuration: cfg)
     let t = target ?? "about:blank"
     if t == "-" {
         if live {
@@ -197,7 +217,7 @@ final class LiveCloser: NSObject, NSWindowDelegate {
         v.loadFileURL(f, allowingReadAccessTo: f.deletingLastPathComponent())
     }
     if live {
-        runLive(title, v, w: 800, h: 600, frame: frame) { line in
+        runLive(title, v, w: 800, h: 600, frame: frame, key: key) { line in
             v.evaluateJavaScript(line) { _, e in
                 if let e { FileHandle.standardError.write("Imp: \(e.localizedDescription)\n".data(using: .utf8)!) }
             }

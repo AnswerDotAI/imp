@@ -72,7 +72,7 @@ Simultaneous TCC requests collide: asking for accessibility and input monitoring
 
 ## Code signing setup
 
-The build recipe is `build_imp()` in `~/aai-ws/macmage/devtool.py`: it holds the bundle id, reads the version from `impVersion` in `main.swift`, passes the Info.plist usage strings from `imp_plist`, and signs without hardened runtime. Adding a permission means adding its usage string to that dict, and nothing else about the build changes.
+The build recipe is `build_imp()` in `devtool.py` at this repo's root (moved from the macmage repo 2026-07-31): it holds the bundle id, reads the version from `impVersion` in `main.swift`, passes the Info.plist usage strings from `imp_plist`, asks `iconmage.compile_icon()` to compile `art/icon/AppIcon.icon`, and signs without hardened runtime. `iconmage` drives `actool`, writes `Assets.car` and `AppIcon.icns` into `Contents/Resources`, and returns the generated plist entries for `mk_app()` to merge before the complete bundle is signed. Adding a permission means adding its usage string to `imp_plist`, and nothing else about the build changes.
 
 Imp.app exists to hold macOS permission grants. macOS keys a grant to a stored rule about the program's identity, so how the bundle is signed decides whether a grant survives a rebuild.
 
@@ -86,7 +86,9 @@ Verified 2026-07-27: editing the launcher source, rebuilding, and re-signing cha
 
 To get the certificate: in Xcode, Settings, Accounts, add the Apple ID, select the team, Manage Certificates, then + and Developer ID Application. This takes four clicks, generates the key inside the login keychain with permission for `codesign` already granted, and needs no files handled. Confirm with `security find-identity -v -p codesigning`.
 
-Releasing means building, signing, and committing the archive: `swifttool.zip_app` writes `dist/Imp.app.zip` with `ditto -c -k --keepParent`, and `install.sh` fetches that from GitHub raw and extracts it with `ditto -x -k`. A round trip preserves the bundle signature exactly (`codesign --verify --strict` passes on the extracted copy and the designated requirement is unchanged), which is what lets other machines inherit identifier+team grants with no certificate of their own. Plain `zip` does not: it can drop extended attributes and mangle symlinks, which invalidates the signature. Never write into the bundle after signing either, since the signature seals `Contents/Resources` and the Info.plist.
+Releasing means building, signing, and committing the archive: `fastcocoa.swifttool.zip_app` writes `dist/Imp.app.zip` with `ditto -c -k --keepParent`, and `install.sh` fetches that from GitHub raw and extracts it with `ditto -x -k`. A round trip preserves the bundle signature exactly (`codesign --verify --strict` passes on the extracted copy and the designated requirement is unchanged), which is what lets other machines inherit identifier+team grants with no certificate of their own. Plain `zip` does not: it can drop extended attributes and mangle symlinks, which invalidates the signature. Never write into the bundle after signing either, since the signature seals `Contents/Resources` and the Info.plist.
+
+On this dev machine, `~/Applications/Imp.app` is a *symlink* to `build/Imp.app` in this repo, so `build_imp()` is deployment: the moment it finishes, every fresh Imp spawn (wisps, agent verbs) runs the new build, with no copy step. Corollaries: don't "install" over the symlink (replacing it with a real directory would silently detach the machine from the build), and a broken build leaves the live Imp broken until the next successful one.
 
 
 Routes that do not work, so nobody retries them:

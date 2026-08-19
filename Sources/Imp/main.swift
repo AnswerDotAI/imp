@@ -49,7 +49,7 @@ func wait(_ pid: pid_t) -> Int32 {
 }
 
 /// The AVFoundation-family categories need their usage string in Info.plist (`imp_plist`
-/// in macmage's devtool.py): macOS kills the process outright when one is requested without it.
+/// in this repo's devtool.py): macOS kills the process outright when one is requested without it.
 /// Each completion carries the person's actual answer, so a true return is definitive.
 func askSync(_ f: (@escaping @Sendable (Bool) -> Void) -> Void) -> Bool {
     let sem = DispatchSemaphore(value: 0), ok = Box(false)
@@ -252,7 +252,7 @@ func usage(_ code: Int32 = 2) -> Never {
            Imp --notify <title> [body]  post a notification
            Imp --alert <title> [body] [button...]  show a message box; the exit code is the button index
            Imp --web <title> [url|file|-]      show a web page in a panel; "-" reads HTML from stdin, no target is about:blank
-           Imp --pick <title> [--keys <chars>] <item...>  choose by key: one char per item, or digits; index to stdout
+           Imp --pick <title> [--keys <chars>] <item...>  choose by key: one char per item, or digits then letters; index to stdout
            Imp --show <title>                  show stdin in a scrollable monospaced panel
 
     --web and --show take --live: stdin becomes the lifeline (a line per update: text for

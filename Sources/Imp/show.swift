@@ -240,11 +240,12 @@ final class WebBridge: NSObject, WKScriptMessageHandler {
         }
         assigned = Array(keys.lowercased())
     } else {
-        guard items.count <= 10 else {
-            FileHandle.standardError.write("Imp: more than ten items need --keys; only ten digits exist\n".data(using: .utf8)!)
+        let pool = Array("0123456789abcdefghijklmnopqrstuvwxyz")
+        guard items.count <= pool.count else {
+            FileHandle.standardError.write("Imp: more than 36 items need --keys; only digits and letters exist\n".data(using: .utf8)!)
             return 2
         }
-        assigned = items.indices.map { Character(String($0)) }
+        assigned = items.indices.map { pool[$0] }
     }
     let stack = NSStackView()
     stack.orientation = .vertical
@@ -255,7 +256,10 @@ final class WebBridge: NSObject, WKScriptMessageHandler {
         let l = NSTextField(labelWithString: "\(assigned[i])  \(label)")
         l.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         l.lineBreakMode = .byTruncatingTail
+        l.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         stack.addArrangedSubview(l)
+        // A row wider than the stack breaks its leading pin and drifts toward center: cap it so truncation engages
+        l.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -28).isActive = true
     }
     let mon = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
         if let ch = e.characters?.lowercased().first, let idx = assigned.firstIndex(of: ch) {

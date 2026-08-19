@@ -4,7 +4,7 @@
 
 macOS asks your permission before a program can watch the keyboard, control other apps, or record the screen. Every program has to ask separately. macOS remembers each grant against one specific program, and silently drops it when that program is rebuilt or its virtual environment moves. For a developer running scripts and automation tools, this means the same dialogs over and over, a Settings list full of entries called `python3.13`, and things that stop working for no visible reason.
 
-Imp is a small signed app that holds those permissions on behalf of anything you run through it.
+Imp is a small signed app that holds the grants once, for everything you run through it.
 
     Imp python watch_keys.py
 
@@ -22,7 +22,7 @@ Then grant it what you need, once:
 
 A permission applies only to processes started after you grant it, so restart whatever you are running once the grant is in place.
 
-Upgrading is the same command again, and keeps every grant. To remove Imp, run `Imp --reset all` first to clear its Privacy & Security entries (the Notifications one is separate, and stays until reset in its own pane), then delete `~/Applications/Imp.app` and the `~/.local/bin/Imp` link.
+Upgrading is the same command again, and every grant survives. To remove Imp, first run `Imp --reset all` to clear its Privacy & Security entries (the Notifications one is separate, and stays until reset in its own pane). Then delete `~/Applications/Imp.app` and the `~/.local/bin/Imp` link.
 
 ## Use
 
@@ -41,15 +41,15 @@ Upgrading is the same command again, and keeps every grant. To remove Imp, run `
 
 Imp finds the command the way a shell does, so `Imp pytest` works as well as `Imp /path/to/pytest`, and an executable script with a shebang runs as `Imp ./watch_keys.py`. Whatever it runs keeps Imp's permissions, including anything that program starts in turn.
 
-Permission names are `accessibility` (watching input, controlling other apps, sending synthetic keystrokes), `screen` (screen recording, and reading window titles), `microphone`, `camera`, `speech` (Apple's speech recognition), `contacts`, `calendars`, `reminders`, `photos`, and `notifications`. Imp always asks for the largest surface a category offers: full access for calendars and reminders, read-write for photos.
+Permission names are `accessibility` (watching input, controlling other apps, sending synthetic keystrokes), `screen` (screen recording, and reading window titles), `microphone`, `camera`, `speech` (Apple's speech recognition), `contacts`, `calendars`, `reminders`, `photos`, and `notifications`. Imp always asks for the broadest access a category offers: full access for calendars and reminders, read-write for photos.
 
-`--grant` asks for one permission at a time and confirms each before moving to the next. It asks macOS to show its own dialog, then waits up to two minutes for the permission to really work. macOS shows each dialog only once per category, so if you dismissed it in the past no dialog can appear: after the wait, Imp prints the exact `open` command for the right Settings pane and what to switch on, and exits nonzero. `Imp --reset <name>` clears the category back to not-determined, so the dialog can come again; `--reset all` clears every TCC category, which is also the clean way to remove Imp's Settings entries before uninstalling. Like a grant, a reset only applies to processes started afterwards.
+`--grant` asks for one permission at a time and confirms each before moving to the next. It asks macOS to show its own dialog, then waits up to two minutes for the permission to really work. macOS shows each dialog only once per category, so if you dismissed it in the past no dialog can appear. After the wait, Imp prints the exact `open` command for the right Settings pane and what to switch on, then exits nonzero. `Imp --reset <name>` clears the category back to not-determined, so the dialog can come again. `--reset all` clears every TCC category, which is also the clean way to remove Imp's Settings entries before uninstalling. Like a grant, a reset only applies to processes started afterwards.
 
 `--check` prints `ok` and exits 0 when every named permission is granted, else exits 1 printing nothing, so both humans (and LLMs) reading output and scripts reading the exit code get an answer.
 
-`--notify`, `--alert`, `--web`, `--pick`, and `--show` exist because macOS will not let an unbundled process speak to the user at all: Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can borrow that. The windowed ones are Imp's wisps: a panel appears, takes an answer, and vanishes. A notification takes about 20ms and needs the `notifications` permission; an alert blocks until its box is dismissed, and exits with the index of the button pressed, so `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script. A pick prints the chosen index to stdout and exits 1 when dismissed, so `i=$(Imp --pick ...)` reads naturally in shell. Esc or the close button dismisses any wisp.
+`--notify`, `--alert`, `--web`, `--pick`, and `--show` exist because macOS will not let an unbundled process speak to the user at all. Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can use these. The windowed ones are Imp's wisps: transient panels that appear, take an answer, and close. A notification takes about 20ms and needs the `notifications` permission. An alert blocks until its box is dismissed, and exits with the index of the button pressed. So `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script. A pick prints the chosen index to `stdout` and exits 1 when dismissed, so `i=$(Imp --pick ...)` reads naturally in shell. Esc or the close button dismisses any wisp.
 
-Every wisp has three properties: content (what it renders), geometry, and an end-condition. Geometry is `--frame <spec>` on `--web`, `--pick`, and `--show`: `tr`/`tl`/`br`/`bl` pins the panel to that corner of the visible screen, `400x300` sets a size centered, and `400x300@tr` does both. The end-condition changes with `--live` on `--show` and `--web`: stdin becomes the panel's lifeline, each line is one update (replacing the text for `--show`; evaluated as JavaScript in the loaded page for `--web`, whose target defaults to `about:blank` so the first line can build the page), EOF exits 0, and the close button exits 2, since a dismissed lamp is information the caller may want. A live panel never takes key focus, so it cannot interrupt typing, and Esc cannot reach it: `tail -f log | Imp --show ticker --live --frame br` is a corner ticker that leaves your keyboard alone.
+Every wisp has three properties: content (what it renders), geometry, and an end-condition. Geometry is `--frame <spec>` on `--web`, `--pick`, and `--show`: `tr`/`tl`/`br`/`bl` pins the panel to that corner of the visible screen, `400x300` sets a size centered, and `400x300@tr` does both. The end-condition changes with `--live` on `--show` and `--web`. A live panel stays up while `stdin` stays open. Each `stdin` line is one update: `--show` replaces its text with the line, and `--web` evaluates the line as JavaScript in the loaded page, whose target defaults to `about:blank` so the first line can create the page. EOF exits 0, and the close button exits 2, since the caller may want to know the panel was dismissed. A live panel never takes key focus, so it cannot interrupt typing, and Esc cannot reach it. `tail -f log | Imp --show ticker --live --frame br` is a corner ticker that never takes keyboard focus.
 
 `--status` reports the state of every permission, and which program macOS thinks it is talking to:
 
@@ -73,15 +73,15 @@ For a background agent, put Imp at the front of a launchd plist's `ProgramArgume
 
 ## How it works
 
-macOS decides which program a permission check applies to by walking up the process tree to a responsible process, not by looking at the binary that made the call. That is why a Python script started from a terminal is treated as the terminal, and why every script you run inherits your terminal's permissions today.
+macOS decides which program a permission check applies to by walking up the process tree to a responsible process. The binary that made the call is irrelevant. That is why a Python script started from a terminal is treated as the terminal, and why every script you run inherits your terminal's permissions today.
 
-Imp makes itself the responsible process and then runs your command as a child, so your command is treated as Imp. When Imp is started from a terminal it would ordinarily inherit the terminal's identity instead, so it re-launches itself once with responsibility disclaimed, which macOS supports for exactly this purpose.
+Imp makes itself the responsible process and then runs your command as a child, so your command is treated as Imp. When started from a terminal, Imp would ordinarily inherit the terminal's identity instead. So it re-launches itself once with responsibility disclaimed, which macOS supports for exactly this purpose.
 
-Permissions are recorded against a code signature requirement rather than a hash of the binary. Imp's requirement is its bundle identifier plus the Answer.AI team ID, so a new version installed over the old one keeps every permission, with no second entry in Settings and no prompt.
+macOS records permissions against a code signature requirement rather than a hash of the binary. Imp's requirement is its bundle identifier plus the Answer.AI team ID, so a new version installed over the old one keeps every permission, with no second entry in Settings and no prompt.
 
 ## Security
 
-Anything you run through Imp gets everything Imp has been granted. That is the whole point, and it means Imp is exactly as trustworthy as the things you choose to run through it. Grant it only what you need, and don't hand `Imp` to code you wouldn't hand your keyboard to.
+Anything you run through Imp has every permission Imp has been granted. That is the whole point, and it means Imp is exactly as trustworthy as the things you choose to run through it. Grant it only what you need, and don't hand `Imp` to code you wouldn't hand your keyboard to.
 
 ## Build from source
 
@@ -90,8 +90,8 @@ Needs Xcode and, for signing, a Developer ID certificate.
     swift build -c release
     swift test
 
-The helpers in `swifttool.py` (currently in the `macmage` repo) build the package, assemble and sign the bundle, and produce the `ditto` archive in `dist/`. An unsigned or ad-hoc-signed build works, but its permissions are keyed to the exact binary, so they are lost on every rebuild.
+The helpers in `fastcocoa.swifttool` build the package, assemble and sign the bundle, and produce the `ditto` archive in `dist/`. An unsigned or ad-hoc-signed build works, but its permissions are keyed to the exact binary, so they are lost on every rebuild.
 
-The `Imp` target is Swift. Alongside it, `CImp` is a small C target holding the things Swift cannot see: two libSystem functions Apple exports without declaring in any header, and the `wait(2)` status macros. `Sources/CImp/include/CImp.apinotes` then annotates that header so Swift imports it with real optionality and readable names, which is worth reading before adding anything to the shim.
+The `Imp` target is Swift. Alongside it, `CImp` is a small C target for the declarations Swift cannot see: two `libSystem` functions Apple exports without declaring in any header, and the `wait(2)` status macros. `Sources/CImp/include/CImp.apinotes` then annotates that header so Swift imports it with the correct optional types and readable names, which is worth reading before adding anything to the shim.
 
-The version lives in `Sources/Imp/main.swift` as `impVersion`, and the build stamps it into the bundle's `Info.plist`.
+The version is `impVersion` in `Sources/Imp/main.swift`, and the build writes it into the bundle's `Info.plist`.

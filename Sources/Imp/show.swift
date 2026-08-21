@@ -186,27 +186,58 @@ final class LiveCloser: NSObject, NSWindowDelegate {
     exit(0)
 }
 
-final class WebBridge: NSObject, WKScriptMessageHandler {
-    func userContentController(_ ucc: WKUserContentController, didReceive m: WKScriptMessage) {
-        let s = m.body as? String ?? String(describing: m.body)
-        FileHandle.standardOutput.write((s + "\n").data(using: .utf8)!)
+/// JSON-lines bridge for a live page. `ready` is always first: page scripts may post while
+/// loading, so their messages wait here until didFinish proves that caller JS is safe to run.
+final class WebBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    var pending = [Any](), ready = false
+
+    func write(_ event: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: event) else {
+            FileHandle.standardError.write("Imp: page posted a value that is not JSON-serializable\n".data(using: .utf8)!)
+            return
+        }
+        FileHandle.standardOutput.write(data)
+        FileHandle.standardOutput.write(Data("\n".utf8))
     }
+
+    func userContentController(_ ucc: WKUserContentController, didReceive m: WKScriptMessage) {
+        if ready { write(["kind": "message", "value": m.body]) }
+        else { pending.append(m.body) }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard !ready else { return }
+        ready = true
+        write(["kind": "ready"])
+        for value in pending { write(["kind": "message", "value": value]) }
+        pending.removeAll()
+    }
+
+    func failed(_ error: Error) {
+        FileHandle.standardError.write("Imp: page failed to load: \(error.localizedDescription)\n".data(using: .utf8)!)
+        exit(1)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { failed(error) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { failed(error) }
 }
 
 /// A web page in a panel. `target` "-" reads HTML from stdin; nil is about:blank. Live mode
 /// evaluates each stdin line as JavaScript in the loaded page: the page defines its own
 /// update functions and the caller sends calls, so updates are incremental and flicker-free.
-/// A live page can also send: webkit.messageHandlers.imp.postMessage(text) writes `text`
-/// to stdout as one line, unbuffered, so events reach the caller as they happen.
+/// A live page writes JSON-lines `ready` and `message` events to stdout; the latter carry
+/// whatever it sends with webkit.messageHandlers.imp.postMessage(value).
 @MainActor func web(_ title: String, _ target: String?, frame: FrameSpec? = nil, live: Bool = false, key: Bool = false) -> Int32 {
     let cfg = WKWebViewConfiguration()
-    if live { cfg.userContentController.add(WebBridge(), name: "imp") }
+    let bridge = live ? WebBridge() : nil
+    if let bridge { cfg.userContentController.add(bridge, name: "imp") }
     let v = WKWebView(frame: .zero, configuration: cfg)
+    v.navigationDelegate = bridge
     let t = target ?? "about:blank"
     if t == "-" {
         if live {
             FileHandle.standardError.write("Imp: --live reads JS lines from stdin, so \"-\" has no meaning; pass a url or file, or omit for about:blank\n".data(using: .utf8)!)
-            return 2
+            return usageExit
         }
         let html = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
         v.loadHTMLString(html, baseURL: nil)
@@ -236,14 +267,14 @@ final class WebBridge: NSObject, WKScriptMessageHandler {
     if let keys {
         guard keys.count == items.count else {
             FileHandle.standardError.write("Imp: --keys needs one character per item\n".data(using: .utf8)!)
-            return 2
+            return usageExit
         }
         assigned = Array(keys.lowercased())
     } else {
         let pool = Array("0123456789abcdefghijklmnopqrstuvwxyz")
         guard items.count <= pool.count else {
             FileHandle.standardError.write("Imp: more than 36 items need --keys; only digits and letters exist\n".data(using: .utf8)!)
-            return 2
+            return usageExit
         }
         assigned = items.indices.map { pool[$0] }
     }

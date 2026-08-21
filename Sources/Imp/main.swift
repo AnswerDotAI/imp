@@ -11,6 +11,7 @@ import Speech
 
 // The version the build stamps into Info.plist as CFBundleShortVersionString (see DEV.md)
 let impVersion = "0.2.0"
+let usageExit: Int32 = 64
 
 func exePath(_ pid: pid_t) -> String {
     var buf = [UInt8](repeating: 0, count: 4096)
@@ -166,7 +167,7 @@ func grant(_ names: [String]) -> Int32 {
         }
         guard let p = perm(name) else {
             print("unknown permission: \(name) (known: \(perms.map(\.name).joined(separator: ", ")))")
-            return 2
+            return usageExit
         }
         if granted(p) { print("\(p.name): already granted"); continue }
         print("""
@@ -241,7 +242,7 @@ func panelOpts(_ rest: [String]) -> (pos: [String], live: Bool, key: Bool, frame
 }
 
 
-func usage(_ code: Int32 = 2) -> Never {
+func usage(_ code: Int32 = usageExit) -> Never {
     print("""
     usage: Imp <command> [args...]      run a command with Imp's permissions
            Imp --grant <a,b>            get the named permissions, one at a time
@@ -258,8 +259,8 @@ func usage(_ code: Int32 = 2) -> Never {
     --web and --show take --live: stdin becomes the lifeline (a line per update: text for
     --show, JS evaluated in the page for --web), EOF exits 0, closing the panel exits 2,
     and the panel never takes focus. --web --live also takes --key: the panel takes the
-    keyboard while the previous app stays frontmost, and the page can emit lines to stdout
-    with webkit.messageHandlers.imp.postMessage(text). --web, --pick, and --show take
+    keyboard while the previous app stays frontmost; stdout emits a JSON ready event, then
+    JSON message events for webkit.messageHandlers.imp.postMessage(value). --web, --pick, and --show take
     --frame <spec>, where spec is tr|tl|br|bl (corner), 400x300 (size), or 400x300@tr (both).
            Imp --snap <path|->          capture a still from the default camera; '-' writes it to stdout
 

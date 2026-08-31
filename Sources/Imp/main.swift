@@ -10,7 +10,7 @@ import Photos
 import Speech
 
 // The version the build stamps into Info.plist as CFBundleShortVersionString (see DEV.md)
-let impVersion = "0.2.0"
+let impVersion = "0.2.1"
 let usageExit: Int32 = 64
 
 func exePath(_ pid: pid_t) -> String {

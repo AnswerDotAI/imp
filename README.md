@@ -28,7 +28,7 @@ Upgrading is the same command again, and every grant survives. To remove Imp, fi
 
     Imp <command> [args...]     run a command with Imp's permissions
     Imp --grant <a,b>           get the named permissions, one at a time
-    Imp --check <a,b>           print "ok" and exit 0 if all are granted, else exit 1 silently
+    Imp --check <a,b>           print "ok", or the missing permissions and exit 1
     Imp --reset <a,b|all>       return categories to not-determined, so a dialog can come again
     Imp --status                report every permission's state
     Imp --version               print the version
@@ -43,9 +43,9 @@ Imp finds the command the way a shell does, so `Imp pytest` works as well as `Im
 
 Permission names are `accessibility` (watching input, controlling other apps, sending synthetic keystrokes), `screen` (screen recording, and reading window titles), `microphone`, `camera`, `speech` (Apple's speech recognition), `contacts`, `calendars`, `reminders`, `photos`, and `notifications`. Imp always asks for the broadest access a category offers: full access for calendars and reminders, read-write for photos.
 
-`--grant` asks for one permission at a time and confirms each before moving to the next. It asks macOS to show its own dialog, then waits up to two minutes for the permission to really work. macOS shows each dialog only once per category, so if you dismissed it in the past no dialog can appear. After the wait, Imp prints the exact `open` command for the right Settings pane and what to switch on, then exits nonzero. `Imp --reset <name>` clears the category back to not-determined, so the dialog can come again. `--reset all` clears every TCC category, which is also the clean way to remove Imp's Settings entries before uninstalling. Like a grant, a reset only applies to processes started afterwards.
+`--grant` asks for one permission at a time in a fresh Imp process and confirms it before moving to the next. It asks macOS to show its own dialog, then waits up to two minutes for the permission to really work. macOS shows each dialog only once per category, so if you dismissed it in the past no dialog can appear. After the wait, Imp prints the exact `open` command for the right Settings pane and what to switch on, then exits nonzero. `Imp --reset <name>` clears the category back to not-determined, so the dialog can come again. `--reset all` clears every TCC category, which is also the clean way to remove Imp's Settings entries before uninstalling. Like a grant, a reset only applies to processes started afterwards.
 
-`--check` prints `ok` and exits 0 when every named permission is granted, else exits 1 printing nothing, so both humans (and LLMs) reading output and scripts reading the exit code get an answer.
+`--check` prints `ok` and exits 0 when every named permission is granted. Otherwise it prints every missing name and exits 1, so both humans reading output and scripts reading the exit code get an answer.
 
 `--notify`, `--alert`, `--web`, `--pick`, and `--show` exist because macOS will not let an unbundled process speak to the user at all. Notification Center refuses a process with no bundle, and a window needs an application to own it. Since Imp is a bundled application, anything running under it can use these. The windowed ones are Imp's wisps: transient panels that appear, take an answer, and close. A notification takes about 20ms and needs the `notifications` permission. An alert blocks until its box is dismissed, and exits with the index of the button pressed. So `Imp --alert "Delete?" "" Delete Cancel` is a usable confirmation in a script. A pick prints the chosen index to `stdout` and exits 1 when dismissed, so `i=$(Imp --pick ...)` reads naturally in shell. Esc or the close button dismisses any wisp.
 

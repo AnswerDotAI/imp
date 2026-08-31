@@ -143,6 +143,13 @@ func checkName(_ name: String) -> Bool {
     return perm(name)?.check() ?? false
 }
 
+func check(_ names: [String]) -> Int32 {
+    let missing = names.filter { !checkName($0) }
+    if missing.isEmpty { print("ok"); return 0 }
+    print("missing: \(missing.joined(separator: ", "))")
+    return 1
+}
+
 func grantAutomation(_ name: String, _ target: String) -> Bool {
     switch automationStatus(target, ask: true) {
     case noErr: print("\(name): granted"); return true
@@ -158,6 +165,17 @@ func grantAutomation(_ name: String, _ target: String) -> Bool {
 /// macOS shows each permission dialog once per app per category, so a denied grant can
 /// never be re-prompted: when no dialog comes, all we can honestly do is say what to do next.
 func grant(_ names: [String]) -> Int32 {
+    // TCC state is cached per process. Give every request a fresh Imp, and wait before
+    // starting the next so macOS never has two permission dialogs competing.
+    if names.count > 1 {
+        var result: Int32 = 0
+        for name in names {
+            let rc = wait(spawn([exePath(getpid()), "--grant", name]))
+            if rc == usageExit { result = usageExit }
+            else if rc != 0, result == 0 { result = 1 }
+        }
+        return result
+    }
     var failed = [String]()
     for name in names {
         if let t = autoTarget(name) {
@@ -246,7 +264,7 @@ func usage(_ code: Int32 = usageExit) -> Never {
     print("""
     usage: Imp <command> [args...]      run a command with Imp's permissions
            Imp --grant <a,b>            get the named permissions, one at a time
-           Imp --check <a,b>            print "ok" and exit 0 if all are granted, else exit 1 silently
+           Imp --check <a,b>            print "ok", or the missing permissions and exit 1
            Imp --reset <a,b|all>        return categories to not-determined, so a dialog can come again
            Imp --status                 report every permission's state
            Imp --version                print the version
@@ -289,9 +307,7 @@ case "--grant", "--check":
     if args.count < 3 { usage() }
     let names = args[2].split(separator: ",").map(String.init)
     if args[1] == "--grant" { exit(grant(names)) }
-    if !names.allSatisfy(checkName) { exit(1) }
-    print("ok")
-    exit(0)
+    exit(check(names))
 case "--notify":
     if args.count < 3 { usage() }
     exit(notify(args[2], args.count > 3 ? args[3] : ""))

@@ -67,7 +67,7 @@ The cost of `[system]` is that clang stops reporting warnings from those headers
 
 ## Why `--grant` asks one at a time
 
-Simultaneous TCC requests collide: asking for accessibility and input monitoring together produced only the accessibility dialog (verified live 2026-07-27, in the Python predecessor). `--grant` therefore walks its list one permission at a time and confirms each before starting the next, and prints the Settings deep link as an `open` command whenever the prompt does not arrive.
+Simultaneous TCC requests collide: asking for accessibility and input monitoring together produced only the accessibility dialog (verified live 2026-07-27, in the Python predecessor). TCC state is also cached for a process: the first request in a combined grant worked while later requests falsely completed without durable grants (observed 2026-08-31). `--grant` therefore spawns one fresh Imp per permission, waits for it to finish before starting the next, and prints the Settings deep link as an `open` command whenever the prompt does not arrive.
 
 
 ## Code signing setup

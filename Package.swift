@@ -8,6 +8,6 @@ let package = Package(
         // C, for the parts Swift cannot reach: undeclared libSystem symbols and the wait(2) macros
         .target(name: "CImp"),
         .executableTarget(name: "Imp", dependencies: ["CImp"]),
-        .testTarget(name: "ImpTests", dependencies: ["CImp"]),
+        .testTarget(name: "ImpTests", dependencies: ["CImp", "Imp"]),
     ]
 )

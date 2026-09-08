@@ -272,6 +272,8 @@ func usage(_ code: Int32 = usageExit) -> Never {
            Imp --alert <title> [body] [button...]  show a message box; the exit code is the button index
            Imp --web <title> [url|file|-]      show a web page in a panel; "-" reads HTML from stdin, no target is about:blank
            Imp --pick <title> [--keys <chars>] <item...>  choose by key: one char per item, or digits then letters; index to stdout
+           Imp --pickbox <title> <item...>      searchable list; Shift-1..9/0 choose visible results
+           Imp --pickbox <title> --json        read strings or {name,text} objects from stdin; original index to stdout
            Imp --show <title>                  show stdin in a scrollable monospaced panel
 
     --web and --show take --live: stdin becomes the lifeline (a line per update: text for
@@ -332,6 +334,21 @@ case "--pick":
     if key { print("--pick cannot take --key: a pick already has the keyboard"); usage() }
     guard pos.count >= 2 else { usage() }
     exit(pick(pos[0], Array(pos.dropFirst()), keys: keys, frame: frame))
+case "--pickbox":
+    var rest = Array(args.dropFirst(2))
+    let json = rest.contains("--json")
+    rest.removeAll { $0 == "--json" }
+    let (pos, live, key, frame) = panelOpts(rest)
+    guard !live && !key && !pos.isEmpty && (json ? pos.count == 1 : pos.count >= 2) else { usage() }
+    let items: [PickboxItem]
+    if json {
+        do { items = try JSONDecoder().decode([PickboxItem].self, from: FileHandle.standardInput.readDataToEndOfFile()) }
+        catch {
+            FileHandle.standardError.write("Imp: --pickbox expects a JSON array of strings or {name, text} objects: \(error)\n".data(using: .utf8)!)
+            exit(usageExit)
+        }
+    } else { items = pos.dropFirst().map { PickboxItem(name: $0) } }
+    exit(pickbox(pos[0], items, frame: frame))
 case "--show":
     let (pos, live, key, frame) = panelOpts(Array(args.dropFirst(2)))
     if key { print("--show cannot take --key: use --web for an interactive page"); usage() }
